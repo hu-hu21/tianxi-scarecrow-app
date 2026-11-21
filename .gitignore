@@ -1,5 +1,6 @@
 # 编译产物（不入库）
 app/windows/dist/
+app/windows-server/dist/
 app/windows/bin/
 app/windows/obj/
 app/android/dist/
@@ -9,6 +10,9 @@ app/android/.gradle/
 app/android/.idea/
 app/android/local.properties
 app/android/keystore/
+tools/__pycache__/
+models/*.pt
+docs/video/_*.png
 
 # 安装包与二进制
 *.apk

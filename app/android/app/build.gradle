@@ -10,8 +10,8 @@ android {
         applicationId "com.tianxi.scarecrow"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 3215
+        versionName "3.21.5"
     }
 
     buildTypes {

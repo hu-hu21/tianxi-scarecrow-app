@@ -193,12 +193,28 @@ namespace ScarecrowControl
 
     static class Http
     {
-        public static string Get(string url, int timeoutMs)
+        /// <summary>经服务器转发时，告诉服务器把请求交给哪台设备。</summary>
+        public static string DeviceAddress = "";
+        /// <summary>每个客户端进程一个标识，服务器据此分配独立转发通道。</summary>
+        public static readonly string ClientId = Guid.NewGuid().ToString("N");
+
+        private static HttpWebRequest Create(string url)
         {
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
-            req.Method = "GET";
             req.Proxy = null;
             req.KeepAlive = false;
+            req.Headers["X-Client-Id"] = ClientId;
+            if (!string.IsNullOrEmpty(DeviceAddress))
+            {
+                req.Headers["X-Device-Address"] = DeviceAddress;
+            }
+            return req;
+        }
+
+        public static string Get(string url, int timeoutMs)
+        {
+            HttpWebRequest req = Create(url);
+            req.Method = "GET";
             req.Timeout = timeoutMs;
             req.ReadWriteTimeout = timeoutMs;
             using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
@@ -211,10 +227,8 @@ namespace ScarecrowControl
         public static string Post(string url, string body, int timeoutMs)
         {
             byte[] data = Encoding.UTF8.GetBytes(body ?? "");
-            HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
+            HttpWebRequest req = Create(url);
             req.Method = "POST";
-            req.Proxy = null;
-            req.KeepAlive = false;
             req.Timeout = timeoutMs;
             req.ReadWriteTimeout = timeoutMs;
             req.ContentType = "application/x-www-form-urlencoded; charset=utf-8";
@@ -240,10 +254,8 @@ namespace ScarecrowControl
                 "Content-Type: application/octet-stream\r\n\r\n");
             byte[] tail = Encoding.UTF8.GetBytes("\r\n--" + boundary + "--\r\n");
 
-            HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
+            HttpWebRequest req = Create(url);
             req.Method = "POST";
-            req.Proxy = null;
-            req.KeepAlive = false;
             req.Timeout = timeoutMs;
             req.ReadWriteTimeout = timeoutMs;
             req.ContentType = "multipart/form-data; boundary=" + boundary;
@@ -355,9 +367,81 @@ namespace ScarecrowControl
         };
     }
 
+    /// <summary>各功能的使用说明文案，电脑端与扩展功能页共用。</summary>
+    static class UsageText
+    {
+        private static readonly System.Collections.Generic.Dictionary<string, string> Map =
+            new System.Collections.Generic.Dictionary<string, string>
+            {
+                { "设备控制",
+                    "1. 先到【硬件设置】绑定服务器与设备，再返回本页。\r\n" +
+                    "2. 【立即试驱】触发一次完整驱赶；【声音测试】【灯光测试】【云台测试】分别单独测试对应部件。\r\n" +
+                    "3. 【停止输出】立即停止驱赶和测试；【网页控制台】用浏览器打开设备自带页面。\r\n" +
+                    "4. 运行状态、电压、光照等实时数据在【设备状态】页查看。\r\n" +
+                    "5. 最近操作日志与版权警示在【设置】页查看。" },
+                { "设备状态",
+                    "1. 本页每 2 秒自动刷新一次，数据经服务器转发自设备。\r\n" +
+                    "2. 运行状态显示当前是待机、驱赶中还是静音；电池电压反映剩余电量。\r\n" +
+                    "3. 光照环境用于判断白天 / 夜间；静音时段表示当前是否处于免打扰区间。\r\n" +
+                    "4. 雷达脉冲、在线时长、固件版本与网络模式用于日常巡检和故障排查。\r\n" +
+                    "5. 若全部显示 --，请先到【硬件设置】检查服务器与设备绑定。" },
+                { "设置",
+                    "1. 运行日志记录最近的连接、控制与配置操作，便于排查网络或设备问题。\r\n" +
+                    "2. 开发警示说明版本、版权与使用限制，请勿反编译或传播修改版。\r\n" +
+                    "3. 服务器地址、设备地址与参数配置请到【硬件设置】页修改。\r\n" +
+                    "4. 扩展功能中的病虫害识别、防护服检测等请到【扩展功能】页使用。" },
+                { "硬件设置",
+                    "1. 服务器地址填写运行 ScarecrowServer 的电脑 IP:端口，例如 192.168.1.20:1819。\r\n" +
+                    "2. 设备地址填写该电脑所在网络中设备的 IP:端口，例如 192.168.1.66:80；留空则由服务器使用当前设备。\r\n" +
+                    "3. 点击【保存并连接】立即生效并写入本机配置，下次启动自动恢复。\r\n" +
+                    "4. 参数配置中的音量、灵敏度、驱赶节奏、静音与光感阈值可拖动滑杆修改。\r\n" +
+                    "5. 【保存配置】下发到设备；【读取配置】重新拉取；【恢复默认】【重启设备】会二次确认。" },
+                { "病虫害识别",
+                    "1. 在运行识别服务的电脑上执行 python tools/yolo_service.py --port 8000，并放入 models/pest.pt。\r\n" +
+                    "2. 服务地址填写识别服务地址（默认与服务器相同），例如 192.168.1.20:8000。\r\n" +
+                    "3.【单张图片】选择田间照片；【开始实时】接入摄像头 MJPEG 画面并逐帧识别。\r\n" +
+                    "4. 结果按风险等级显示：轻微 / 中等 / 严重，严重时红色报警。\r\n" +
+                    "5. 建议叶片占画面 1/3 以上，避免强逆光；模型需用本地病虫害照片训练，见 docs/YOLOv8识别.md。" },
+                { "人员防护服检测",
+                    "1. 把包含 person / helmet / vest / no_helmet / no_vest 类别的权重放到 models/ppe.pt 后重启识别服务。\r\n" +
+                    "2. 选择现场照片或【开始实时】接入摄像头；系统会把安全帽、防护服检测框关联到每个人。\r\n" +
+                    "3. 结果列出人员数量、穿戴合规人数、不合规人数，以及缺少安全帽 / 防护服的次数。\r\n" +
+                    "4. 未穿戴时报警并红色标注；只有 yolov8n 权重时只能识别人，无法判断穿戴。\r\n" +
+                    "5. 公开权重仅作演示，正式使用请用本现场照片微调，见 docs/YOLOv8识别.md。" },
+                { "驱鸟策略",
+                    "1. 触发方式可选【雷达触发】【视觉触发】【雷达 + 视觉】，推荐雷达+视觉减少误触发。\r\n" +
+                    "2. 视觉冷却时间范围 30 - 3600 秒，表示一次视觉确认后再次触发的最短间隔。\r\n" +
+                    "3.【应用策略】下发到设备；【立即驱赶】测试一次输出；【读取当前状态】查看设备状态与策略。" },
+                { "小车固定路线",
+                    "1. 每行一个航点，格式为 x,y,动作,停留秒数，例如 5,0,spray,3。\r\n" +
+                    "2. 动作可选 none / spray / water / photo / wait；最多 64 个航点，空行与 # 开头行会被忽略。\r\n" +
+                    "3.【下发路线】写入设备；【启动】执行，【暂停】【停止】【回原点】控制小车。" },
+                { "天气预报与水阀",
+                    "1. 输入经纬度后点击【刷新天气】，读取实时气温、湿度、降水与天气现象。\r\n" +
+                    "2. 打开【自动灌溉规则】，设置湿度下限与温度区间，点击【应用自动规则】下发。\r\n" +
+                    "3.【开阀 30 秒】【关闭水阀】可手动控制；【读取阀门状态】查看开关、模式与流量。" },
+                { "服务控制",
+                    "1. 在【设备绑定】添加设备名称与地址，例如 192.168.1.66:8080，并设为当前设备。\r\n" +
+                    "2. 在【监听设置】填写端口（默认 1819），点击【启动服务】。\r\n" +
+                    "3. 手机 App 的【硬件设置】填写本机 IP:端口与设备地址，保存并绑定。\r\n" +
+                    "4. 若手机无法访问，请在 Windows 防火墙放行该端口，或以管理员身份运行。" },
+                { "设备绑定",
+                    "1. 名称可自定义，例如 1 号田东侧；地址格式 IP:端口，省略端口时默认 80。\r\n" +
+                    "2. 点击【添加 / 更新】保存；选中列表项后可【设为当前】或【删除选中】。\r\n" +
+                    "3. 绑定结果保存在程序目录 server.cfg，重启后自动恢复。" }
+            };
+
+        public static string Get(string feature)
+        {
+            string text;
+            return Map.TryGetValue(feature, out text) ? text : "使用说明待补充。";
+        }
+    }
+
     class MainForm : Form
     {
-        private TextBox _ip;
+        private TextBox _serverIp;
+        private TextBox _deviceAddr;
         private Label _pill;
         private Label _state, _vbat, _light, _quiet, _pulses, _uptime, _fw, _mode;
         private NumericUpDown _volDay, _volNight, _sens, _cool, _tracks;
@@ -370,9 +454,20 @@ namespace ScarecrowControl
         private TextBox _logBox;
         private Timer _timer;
 
+        private Panel _pageControl;
+        private Panel _pageStatus;
+        private Panel _pageSettings;
+        private Panel _pageAbout;
+        private Panel _cardHost;
+        private int _cardYOffset;
+        private readonly List<UiButton> _nav = new List<UiButton>();
+        private Panel _splash;
+        private Timer _splashTimer;
+
         private bool _busy;
         private bool _online;
         private bool _configLoaded;
+        private string _serverAddr = "192.168.4.1";
         private string _lastIp = "";
         private string _lastError = "";
 
@@ -380,8 +475,8 @@ namespace ScarecrowControl
 
         public MainForm()
         {
-            Text = "稻草人驱鸟控制器 - Windows 控制台";
-            ClientSize = new Size(1000, 720);
+            Text = "稻草人驱鸟控制器 v3.21.5 - Windows 控制台";
+            ClientSize = new Size(1000, 800);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
@@ -391,10 +486,12 @@ namespace ScarecrowControl
             AutoScaleMode = AutoScaleMode.None;
 
             BuildHeader();
-            BuildStatusCard();
-            BuildActionCard();
-            BuildConfigCard();
-            BuildLogCard();
+            BuildBottomNav();
+            BuildControlPage();
+            BuildStatusPage();
+            BuildSettingsPage();
+            BuildAboutPage();
+            BuildSplash();
 
             LoadSettings();
             ApplyDpiScale();
@@ -406,63 +503,284 @@ namespace ScarecrowControl
 
             Shown += delegate
             {
-                if (_ip.Text.Trim().Length > 0)
+                Rectangle wa = Screen.FromControl(this).WorkingArea;
+                int x = Math.Max(wa.Left, Math.Min(Left, wa.Right - Width));
+                int y = Math.Max(wa.Top, Math.Min(Top, wa.Bottom - Height));
+                Location = new Point(x, y);
+
+                _splashTimer = new Timer();
+                _splashTimer.Interval = 1500;
+                _splashTimer.Tick += delegate
                 {
-                    PollTick();
-                }
+                    _splashTimer.Stop();
+                    if (_splash != null) _splash.Visible = false;
+                    if (Ip.Length > 0) PollTick();
+                };
+                _splashTimer.Start();
             };
+        }
+
+        private void BuildControlPage()
+        {
+            _cardHost = _pageControl;
+            _cardYOffset = 84;
+            BuildActionCard();
+            AddUsageCard(_pageControl, 350, "设备控制", 170);
+        }
+
+        private void BuildStatusPage()
+        {
+            _cardHost = _pageStatus;
+            _cardYOffset = 84;
+            BuildStatusCard();
+            AddUsageCard(_pageStatus, 350, "设备状态", 170);
+        }
+
+        private void BuildSettingsPage()
+        {
+            _cardHost = _pageSettings;
+            _cardYOffset = 84;
+
+            CardPanel server = NewCard(16, 92, 968, 138, "服务器 / 设备绑定");
+
+            server.Controls.Add(Ui.Lbl("服务器地址（设备数据经服务器转发，支持 IP:端口）",
+                18, 42, 562, 26, 9f, false, Theme.Muted));
+            _serverIp = new TextBox();
+            _serverIp.Text = "192.168.4.1";
+            _serverIp.Location = new Point(586, 41);
+            _serverIp.Size = new Size(220, 28);
+            _serverIp.BackColor = Theme.Input;
+            _serverIp.ForeColor = Theme.Text;
+            _serverIp.BorderStyle = BorderStyle.FixedSingle;
+            _serverIp.Font = new Font("Consolas", 10.5f);
+            server.Controls.Add(_serverIp);
+
+            server.Controls.Add(Ui.Lbl("设备地址（服务器转发的目标设备）",
+                18, 86, 562, 26, 9f, false, Theme.Muted));
+            _deviceAddr = new TextBox();
+            _deviceAddr.Text = "192.168.4.1";
+            _deviceAddr.Location = new Point(586, 85);
+            _deviceAddr.Size = new Size(220, 28);
+            _deviceAddr.BackColor = Theme.Input;
+            _deviceAddr.ForeColor = Theme.Text;
+            _deviceAddr.BorderStyle = BorderStyle.FixedSingle;
+            _deviceAddr.Font = new Font("Consolas", 10.5f);
+            server.Controls.Add(_deviceAddr);
+
+            UiButton applyServer = new UiButton("保存并连接", Theme.Accent);
+            applyServer.Location = new Point(700, 63);
+            applyServer.Size = new Size(130, 38);
+            applyServer.Click += delegate
+            {
+                string addr = _serverIp.Text.Trim();
+                if (addr.Length == 0) addr = "192.168.4.1";
+                string dev = _deviceAddr.Text.Trim();
+                if (dev.Length == 0) dev = "192.168.4.1";
+                _serverIp.Text = addr;
+                _deviceAddr.Text = dev;
+                _serverAddr = addr;
+                Http.DeviceAddress = dev;
+                SaveSettings();
+                Log("服务器 " + addr + "，设备 " + dev);
+                ConnectNow();
+            };
+            server.Controls.Add(applyServer);
+
+            UiButton autoFind = new UiButton("自动查找", Theme.CardEdge);
+            autoFind.Location = new Point(838, 63);
+            autoFind.Size = new Size(112, 38);
+            autoFind.Click += delegate { AutoDetect(); };
+            server.Controls.Add(autoFind);
+
+            BuildConfigCard();
+            AddUsageCard(_pageSettings, 760, "硬件设置", 160);
+        }
+
+        private void BuildAboutPage()
+        {
+            _cardHost = _pageAbout;
+            _cardYOffset = 84;
+
+            BuildLogCard();
+
+            CardPanel card = NewCard(16, 368, 968, 300, "开发警示");
+            card.Controls.Add(Ui.Lbl("版本 3.21.5", 18, 44, 300, 26, 10f, true, Theme.Accent));
+            card.Controls.Add(Ui.Lbl("Copyright (C) 2026 【胡宇宸/tj248511fg51/y9000p】",
+                18, 76, 920, 26, 10.5f, true, Theme.Text));
+
+            Label terms = Ui.Lbl(
+                "本程序为独立原创作品，版权归作者所有。\n" +
+                "严禁未经许可反编译、逆向工程、破解、修改源码、非法复制及传播。\n" +
+                "对于本软件相关规则、使用说明，最终解释权归作者本人。",
+                18, 112, 920, 120, 9.5f, false, Theme.Muted);
+            terms.TextAlign = ContentAlignment.TopLeft;
+            card.Controls.Add(terms);
+
+            AddUsageCard(_pageAbout, 690, "设置", 170);
+        }
+
+        private void BuildBottomNav()
+        {
+            Panel bar = new Panel();
+            bar.Dock = DockStyle.Bottom;
+            bar.Height = 64;
+            bar.BackColor = Theme.Card;
+            Controls.Add(bar);
+
+            Panel line = new Panel();
+            line.Dock = DockStyle.Top;
+            line.Height = 1;
+            line.BackColor = Theme.CardEdge;
+            bar.Controls.Add(line);
+
+            string[] names = { "设备控制", "设备状态", "硬件设置", "扩展功能", "设置" };
+            for (int i = 0; i < names.Length; i++)
+            {
+                UiButton b = new UiButton(names[i], Theme.Card);
+                b.Location = new Point(16 + i * 190, 10);
+                b.Size = new Size(174, 44);
+                b.Font = new Font("Microsoft YaHei UI", 10.5f);
+                int idx = i;
+                b.Click += delegate
+                {
+                    if (idx == 3) OpenFeatures();
+                    else ShowPage(idx);
+                };
+                bar.Controls.Add(b);
+                _nav.Add(b);
+            }
+
+            int pageH = ClientSize.Height - 84 - 64;
+            _pageControl = new Panel();
+            _pageControl.Location = new Point(0, 84);
+            _pageControl.Size = new Size(1000, pageH);
+            _pageControl.BackColor = Theme.Bg;
+            _pageControl.AutoScroll = true;
+            _pageControl.Visible = true;
+            Controls.Add(_pageControl);
+
+            _pageStatus = new Panel();
+            _pageStatus.Location = new Point(0, 84);
+            _pageStatus.Size = new Size(1000, pageH);
+            _pageStatus.BackColor = Theme.Bg;
+            _pageStatus.AutoScroll = true;
+            _pageStatus.Visible = false;
+            Controls.Add(_pageStatus);
+
+            _pageSettings = new Panel();
+            _pageSettings.Location = new Point(0, 84);
+            _pageSettings.Size = new Size(1000, pageH);
+            _pageSettings.BackColor = Theme.Bg;
+            _pageSettings.AutoScroll = true;
+            _pageSettings.Visible = false;
+            Controls.Add(_pageSettings);
+
+            _pageAbout = new Panel();
+            _pageAbout.Location = new Point(0, 84);
+            _pageAbout.Size = new Size(1000, pageH);
+            _pageAbout.BackColor = Theme.Bg;
+            _pageAbout.AutoScroll = true;
+            _pageAbout.Visible = false;
+            Controls.Add(_pageAbout);
+
+            ShowPage(0);
+        }
+
+        private void ShowPage(int index)
+        {
+            if (_pageControl == null || _pageStatus == null ||
+                _pageSettings == null || _pageAbout == null) return;
+            _pageControl.Visible = index == 0;
+            _pageStatus.Visible = index == 1;
+            _pageSettings.Visible = index == 2;
+            _pageAbout.Visible = index == 4;
+            for (int i = 0; i < _nav.Count; i++)
+            {
+                if (i == 3) continue;
+                _nav[i].BackColor = i == index ? Theme.Accent : Theme.Card;
+            }
+            Panel page = index == 0 ? _pageControl
+                : index == 1 ? _pageStatus
+                : index == 2 ? _pageSettings
+                : _pageAbout;
+            page.AutoScrollPosition = new Point(0, 0);
+        }
+
+        private void OpenFeatures()
+        {
+            using (FeaturesForm f = new FeaturesForm(Ip))
+            {
+                f.ShowDialog(this);
+                if (f.NavigateTo >= 0) ShowPage(f.NavigateTo);
+            }
+        }
+
+        private void AddUsageCard(Panel host, int y, string feature, int height)
+        {
+            CardPanel card = new CardPanel();
+            card.Location = new Point(16, y - _cardYOffset);
+            card.Size = new Size(968, height);
+            host.Controls.Add(card);
+
+            card.Controls.Add(Ui.Lbl(feature + "功能使用说明", 16, 10, 900, 26, 11f, true, Theme.Accent));
+            Label body = Ui.Lbl(UsageText.Get(feature), 16, 40, 930, height - 50, 9.5f, false, Theme.Muted);
+            body.TextAlign = ContentAlignment.TopLeft;
+            card.Controls.Add(body);
+        }
+
+        private void BuildSplash()
+        {
+            _splash = new Panel();
+            _splash.Dock = DockStyle.Fill;
+            _splash.BackColor = Theme.Bg;
+
+            PictureBox logo = new PictureBox();
+            logo.Size = new Size(128, 128);
+            logo.SizeMode = PictureBoxSizeMode.Zoom;
+            logo.BackColor = Color.Transparent;
+            try
+            {
+                using (Icon ico = Icon.ExtractAssociatedIcon(Application.ExecutablePath))
+                {
+                    if (ico != null) logo.Image = ico.ToBitmap();
+                }
+            }
+            catch
+            {
+            }
+
+            Label title = Ui.Lbl("稻草人驱鸟控制器", 0, 0, 600, 44, 24f, true, Theme.Text);
+            title.TextAlign = ContentAlignment.MiddleCenter;
+            Label tip = Ui.Lbl("v3.21.5  ·  正在加载设备配置…", 0, 0, 600, 26, 10.5f, false, Theme.Muted);
+            tip.TextAlign = ContentAlignment.MiddleCenter;
+
+            _splash.Controls.Add(logo);
+            _splash.Controls.Add(title);
+            _splash.Controls.Add(tip);
+            _splash.Resize += delegate
+            {
+                int cx = _splash.Width / 2;
+                int cy = _splash.Height / 2;
+                logo.Location = new Point(cx - 64, cy - 110);
+                title.Location = new Point(cx - 300, cy + 34);
+                tip.Location = new Point(cx - 300, cy + 82);
+            };
+
+            Controls.Add(_splash);
+            _splash.BringToFront();
         }
 
         private void BuildHeader()
         {
             Controls.Add(Ui.Lbl("稻草人驱鸟控制器", 20, 12, 380, 34, 18f, true, Theme.Text));
-            Controls.Add(Ui.Lbl("Windows 控制台  ·  Wi-Fi 局域网直连", 22, 46, 360, 22, 9f, false, Theme.Muted));
+            Controls.Add(Ui.Lbl("Windows 控制台  ·  经服务器转发  ·  v3.21.5", 22, 46, 460, 22, 9f, false, Theme.Muted));
 
-            Controls.Add(Ui.Lbl("设备地址", 604, 20, 66, 26, 9f, false, Theme.Muted));
+            Label hint = Ui.Lbl("连接设置见【硬件设置】", 604, 30, 200, 22, 9f, false, Theme.Muted);
+            hint.TextAlign = ContentAlignment.MiddleRight;
+            Controls.Add(hint);
 
-            _ip = new TextBox();
-            _ip.Text = "192.168.4.1";
-            _ip.Location = new Point(672, 19);
-            _ip.Size = new Size(150, 28);
-            _ip.BackColor = Theme.Input;
-            _ip.ForeColor = Theme.Text;
-            _ip.BorderStyle = BorderStyle.FixedSingle;
-            _ip.Font = new Font("Consolas", 10.5f);
-            Controls.Add(_ip);
-
-            UiButton connect = new UiButton("连接", Theme.Accent);
-            connect.Location = new Point(830, 17);
-            connect.Size = new Size(72, 32);
-            connect.Click += delegate { ConnectNow(); };
-            Controls.Add(connect);
-
-            UiButton auto = new UiButton("自动查找", Theme.CardEdge);
-            auto.Location = new Point(910, 17);
-            auto.Size = new Size(74, 32);
-            auto.Click += delegate { AutoDetect(); };
-            Controls.Add(auto);
-
-            UiButton about = new UiButton("关于", Theme.CardEdge);
-            about.Location = new Point(506, 18);
-            about.Size = new Size(72, 30);
-            about.Font = new Font("Microsoft YaHei UI", 9f);
-            about.Click += delegate { ShowAbout(); };
-            Controls.Add(about);
-
-            UiButton ext = new UiButton("扩展功能", Theme.Accent);
-            ext.Location = new Point(420, 18);
-            ext.Size = new Size(78, 30);
-            ext.Font = new Font("Microsoft YaHei UI", 9f);
-            ext.Click += delegate
-            {
-                using (FeaturesForm f = new FeaturesForm(_ip.Text))
-                {
-                    f.ShowDialog(this);
-                }
-            };
-            Controls.Add(ext);
-
-            _pill = Ui.Lbl("● 未连接", 606, 54, 378, 22, 9f, false, Theme.Muted);
+            _pill = Ui.Lbl("● 未连接", 800, 28, 182, 26, 9.5f, false, Theme.Muted);
+            _pill.TextAlign = ContentAlignment.MiddleRight;
             Controls.Add(_pill);
         }
 
@@ -482,7 +800,7 @@ namespace ScarecrowControl
             dlg.AutoScaleMode = AutoScaleMode.None;
 
             dlg.Controls.Add(Ui.Lbl("关于 稻草人驱鸟控制器", 24, 18, 500, 34, 17f, true, Theme.Text));
-            dlg.Controls.Add(Ui.Lbl("Windows 控制台  ·  独立原创作品", 26, 54, 500, 22, 9f, false, Theme.Muted));
+            dlg.Controls.Add(Ui.Lbl("Windows 控制台  ·  独立原创作品  ·  v3.21.5", 26, 54, 500, 22, 9f, false, Theme.Muted));
 
             dlg.Controls.Add(Ui.Lbl("Copyright (C) 2026 【胡宇宸/tj248511fg51/y9000p】",
                                     26, 94, 508, 26, 10.5f, true, Theme.Text));
@@ -508,77 +826,72 @@ namespace ScarecrowControl
         private CardPanel NewCard(int x, int y, int w, int h, string title)
         {
             CardPanel card = new CardPanel();
-            card.Location = new Point(x, y);
+            card.Location = new Point(x, y - _cardYOffset);
             card.Size = new Size(w, h);
-            Controls.Add(card);
+            if (_cardHost != null) _cardHost.Controls.Add(card);
+            else Controls.Add(card);
             card.Controls.Add(Ui.Lbl(title, 16, 10, w - 32, 26, 11f, true, Theme.Text));
             return card;
         }
 
         private void BuildStatusCard()
         {
-            CardPanel card = NewCard(16, 92, 470, 230, "设备状态");
+            CardPanel card = NewCard(16, 92, 968, 230, "设备状态");
 
-            int[] ys = new int[] { 48, 92, 136, 180 };
+            int[] ys = new int[] { 52, 118 };
+            int[] labels = new int[] { 18, 262, 506, 750 };
+            int[] values = new int[] { 96, 340, 584, 828 };
 
-            card.Controls.Add(Ui.Lbl("运行状态", 18, ys[0], 74, 24, 9f, false, Theme.Muted));
-            _state = Ui.Lbl("--", 96, ys[0], 120, 24, 10f, true, Theme.Text);
-            card.Controls.Add(_state);
+            string[] names = { "运行状态", "电池电压", "光照环境", "静音时段",
+                               "雷达脉冲", "在线时长", "固件版本", "网络模式" };
+            Label[] targets = new Label[8];
 
-            card.Controls.Add(Ui.Lbl("电池电压", 242, ys[0], 74, 24, 9f, false, Theme.Muted));
-            _vbat = Ui.Lbl("--", 320, ys[0], 120, 24, 10f, true, Theme.Text);
-            card.Controls.Add(_vbat);
+            for (int i = 0; i < names.Length; i++)
+            {
+                int col = i % 4;
+                int row = i / 4;
+                card.Controls.Add(Ui.Lbl(names[i], labels[col], ys[row], 76, 24,
+                    9f, false, Theme.Muted));
+                targets[i] = Ui.Lbl("--", values[col], ys[row], 140, 24,
+                    10f, true, Theme.Text);
+                card.Controls.Add(targets[i]);
+            }
 
-            card.Controls.Add(Ui.Lbl("光照环境", 18, ys[1], 74, 24, 9f, false, Theme.Muted));
-            _light = Ui.Lbl("--", 96, ys[1], 120, 24, 10f, true, Theme.Text);
-            card.Controls.Add(_light);
-
-            card.Controls.Add(Ui.Lbl("静音时段", 242, ys[1], 74, 24, 9f, false, Theme.Muted));
-            _quiet = Ui.Lbl("--", 320, ys[1], 120, 24, 10f, true, Theme.Text);
-            card.Controls.Add(_quiet);
-
-            card.Controls.Add(Ui.Lbl("雷达脉冲", 18, ys[2], 74, 24, 9f, false, Theme.Muted));
-            _pulses = Ui.Lbl("--", 96, ys[2], 120, 24, 10f, true, Theme.Text);
-            card.Controls.Add(_pulses);
-
-            card.Controls.Add(Ui.Lbl("在线时长", 242, ys[2], 74, 24, 9f, false, Theme.Muted));
-            _uptime = Ui.Lbl("--", 320, ys[2], 120, 24, 10f, true, Theme.Text);
-            card.Controls.Add(_uptime);
-
-            card.Controls.Add(Ui.Lbl("固件版本", 18, ys[3], 74, 24, 9f, false, Theme.Muted));
-            _fw = Ui.Lbl("--", 96, ys[3], 120, 24, 10f, true, Theme.Text);
-            card.Controls.Add(_fw);
-
-            card.Controls.Add(Ui.Lbl("网络模式", 242, ys[3], 74, 24, 9f, false, Theme.Muted));
-            _mode = Ui.Lbl("--", 320, ys[3], 120, 24, 10f, true, Theme.Text);
-            card.Controls.Add(_mode);
+            _state = targets[0];
+            _vbat = targets[1];
+            _light = targets[2];
+            _quiet = targets[3];
+            _pulses = targets[4];
+            _uptime = targets[5];
+            _fw = targets[6];
+            _mode = targets[7];
         }
 
         private void BuildActionCard()
         {
-            CardPanel card = NewCard(16, 334, 470, 238, "快捷操作");
+            CardPanel card = NewCard(16, 92, 968, 238, "快捷操作");
 
-            AddActionButton(card, "立即试驱", 18, 44, 210, Theme.Accent, "all");
-            AddActionButton(card, "声音测试", 240, 44, 210, Theme.CardEdge, "sound");
-            AddActionButton(card, "灯光测试", 18, 94, 210, Theme.CardEdge, "light");
-            AddActionButton(card, "云台测试", 240, 94, 210, Theme.CardEdge, "servo");
-            AddActionButton(card, "停止输出", 18, 144, 210, Theme.Red, "stop");
+            AddActionButton(card, "立即试驱", 18, 44, 290, Theme.Accent, "all");
+            AddActionButton(card, "声音测试", 340, 44, 290, Theme.CardEdge, "sound");
+            AddActionButton(card, "灯光测试", 662, 44, 290, Theme.CardEdge, "light");
+            AddActionButton(card, "云台测试", 18, 94, 290, Theme.CardEdge, "servo");
+            AddActionButton(card, "停止输出", 340, 94, 290, Theme.Red, "stop");
 
             UiButton web = new UiButton("打开网页控制台", Theme.CardEdge);
-            web.Location = new Point(240, 144);
-            web.Size = new Size(210, 40);
+            web.Location = new Point(662, 94);
+            web.Size = new Size(290, 40);
             web.Click += delegate { OpenWeb(); };
             card.Controls.Add(web);
 
             UiButton reset = new UiButton("恢复设备默认值", Theme.CardEdge);
-            reset.Location = new Point(18, 194);
-            reset.Size = new Size(210, 36);
+            reset.Location = new Point(18, 144);
+            reset.Size = new Size(290, 40);
             reset.Click += delegate { ResetDevice(); };
             card.Controls.Add(reset);
 
             UiButton reboot = new UiButton("重启设备", Theme.CardEdge);
-            reboot.Location = new Point(240, 194);
-            reboot.Size = new Size(210, 36);
+            reboot.Location = new Point(340, 144);
+            reboot.Size = new Size(290, 40);
             reboot.Click += delegate { RebootDevice(); };
             card.Controls.Add(reboot);
         }
@@ -615,7 +928,7 @@ namespace ScarecrowControl
 
         private void BuildConfigCard()
         {
-            CardPanel card = NewCard(502, 92, 482, 500, "参数配置");
+            CardPanel card = NewCard(16, 246, 968, 500, "参数配置");
 
             card.Controls.Add(Ui.Lbl("推荐场景", 18, 38, 74, 26, 9f, false, Theme.Muted));
 
@@ -755,11 +1068,11 @@ namespace ScarecrowControl
 
         private void BuildLogCard()
         {
-            CardPanel card = NewCard(16, 604, 968, 100, "运行日志");
+            CardPanel card = NewCard(16, 92, 968, 260, "运行日志");
 
             _logBox = new TextBox();
             _logBox.Location = new Point(16, 40);
-            _logBox.Size = new Size(936, 48);
+            _logBox.Size = new Size(936, 206);
             _logBox.Multiline = true;
             _logBox.ReadOnly = true;
             _logBox.ScrollBars = ScrollBars.Vertical;
@@ -780,14 +1093,14 @@ namespace ScarecrowControl
             // 保证整窗不超出屏幕可用区域
             float maxScale = Math.Min(
                 (Screen.PrimaryScreen.WorkingArea.Width - 40) / 1000f,
-                (Screen.PrimaryScreen.WorkingArea.Height - 80) / 720f);
+                (Screen.PrimaryScreen.WorkingArea.Height - 80) / 800f);
             if (maxScale < 0.7f) maxScale = 0.7f;
             if (scale > maxScale) scale = maxScale;
 
             if (scale < 0.95f || scale > 1.05f)
             {
                 Scale(new SizeF(scale, scale));
-                ClientSize = new Size((int)(1000 * scale), (int)(720 * scale));
+                ClientSize = new Size((int)(1000 * scale), (int)(800 * scale));
             }
         }
 
@@ -815,11 +1128,23 @@ namespace ScarecrowControl
                     foreach (string line in lines)
                     {
                         int eq = line.IndexOf('=');
-                        if (eq > 0 && line.Substring(0, eq).Trim() == "ip")
+                        if (eq <= 0) continue;
+                        string key = line.Substring(0, eq).Trim();
+                        string val = line.Substring(eq + 1).Trim();
+                        if (key == "ip" || key == "server")
                         {
-                            _ip.Text = line.Substring(eq + 1).Trim();
+                            _serverAddr = val;
+                            if (_serverIp != null) _serverIp.Text = val;
+                        }
+                        else if (key == "device" && _deviceAddr != null)
+                        {
+                            _deviceAddr.Text = val;
                         }
                     }
+                }
+                if (_deviceAddr != null)
+                {
+                    Http.DeviceAddress = _deviceAddr.Text.Trim();
                 }
             }
             catch
@@ -831,7 +1156,12 @@ namespace ScarecrowControl
         {
             try
             {
-                File.WriteAllText(SettingsPath, "ip=" + _ip.Text.Trim(), Encoding.UTF8);
+                string dev = _deviceAddr == null ? "" : _deviceAddr.Text.Trim();
+                File.WriteAllText(SettingsPath,
+                    "ip=" + _serverAddr + "\n" +
+                    "server=" + _serverAddr + "\n" +
+                    "device=" + dev,
+                    Encoding.UTF8);
             }
             catch
             {
@@ -842,7 +1172,7 @@ namespace ScarecrowControl
 
         private string Ip
         {
-            get { return _ip.Text.Trim(); }
+            get { return _serverAddr.Trim().Length == 0 ? "192.168.4.1" : _serverAddr.Trim(); }
         }
 
         private string Url(string path)
@@ -892,6 +1222,8 @@ namespace ScarecrowControl
         private async void ConnectNow()
         {
             _lastIp = Ip;
+            if (_serverIp != null) _serverIp.Text = Ip;
+            if (_deviceAddr != null) Http.DeviceAddress = _deviceAddr.Text.Trim();
             _configLoaded = false;
             SaveSettings();
             Log("正在连接 " + Ip + " …");
@@ -1175,7 +1507,8 @@ namespace ScarecrowControl
 
             if (found != null)
             {
-                _ip.Text = found;
+                _serverAddr = found;
+                if (_serverIp != null) _serverIp.Text = found;
                 SaveSettings();
                 Log("已发现设备：" + found);
                 await RefreshStatus();
@@ -1183,7 +1516,7 @@ namespace ScarecrowControl
             }
             else
             {
-                Log("未发现设备。请先连接 Scarecrow-XXXX 热点（默认密码见设备标签），或手动输入 IP。");
+                Log("未发现设备。请先连接 Scarecrow-XXXX 热点（密码 scarecrow），或手动输入 IP。");
             }
         }
     }

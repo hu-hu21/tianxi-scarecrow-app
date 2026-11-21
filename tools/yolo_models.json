@@ -1,0 +1,47 @@
+{
+  "pest": {
+    "weights": "models/pest.pt",
+    "conf": 0.35,
+    "labels": {
+      "aphid": "蚜虫",
+      "leafhopper": "叶蝉",
+      "planthopper": "飞虱",
+      "leaf_blight": "叶斑病",
+      "rice_blast": "稻瘟病",
+      "rust": "锈病",
+      "powdery_mildew": "白粉病",
+      "healthy": "健康叶片"
+    },
+    "alarm_classes": [],
+    "severity": {
+      "low": 0.005,
+      "high": 0.02
+    }
+  },
+  "ppe": {
+    "weights": "models/ppe.pt",
+    "conf": 0.35,
+    "required": ["helmet", "vest"],
+    "person_classes": ["person", "worker", "farmer"],
+    "helmet_classes": ["helmet", "hardhat", "hard_hat", "safety_helmet"],
+    "vest_classes": ["vest", "safety_vest", "reflective_vest", "hi_vis", "hivis"],
+    "helmet_missing_classes": ["no_helmet", "no_hardhat", "without_helmet", "bare_head"],
+    "vest_missing_classes": ["no_vest", "no_safety_vest", "without_vest"],
+    "assume_missing_when_absent": true,
+    "labels": {
+      "person": "人员",
+      "worker": "作业人员",
+      "farmer": "作业人员",
+      "helmet": "安全帽",
+      "hardhat": "安全帽",
+      "safety_helmet": "安全帽",
+      "no_helmet": "未戴安全帽",
+      "no_hardhat": "未戴安全帽",
+      "vest": "防护服",
+      "safety_vest": "防护服",
+      "reflective_vest": "防护服",
+      "no_vest": "未穿防护服"
+    },
+    "alarm_classes": ["no_helmet", "no_vest", "no_hardhat", "without_helmet"]
+  }
+}

@@ -71,6 +71,9 @@ public class FeaturesActivity extends Activity {
     private DeviceApi api;
     private SharedPreferences prefs;
     private EditText addrView;
+    private EditText deviceView;
+    private ScrollView scroll;
+    private String deviceAddr = "";
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final AtomicBoolean alive = new AtomicBoolean(false);
@@ -175,9 +178,11 @@ public class FeaturesActivity extends Activity {
         prefs = getSharedPreferences("scarecrow", MODE_PRIVATE);
         String ip = getIntent().getStringExtra("ip");
         if (ip == null || ip.trim().length() == 0) {
-            ip = prefs.getString("ip", "192.168.4.1");
+            ip = prefs.getString("server", prefs.getString("ip", "192.168.4.1"));
         }
-        api = new DeviceApi(ip);
+        deviceAddr = getIntent().getStringExtra("device");
+        if (deviceAddr == null) deviceAddr = prefs.getString("device", "");
+        api = new DeviceApi(ip, deviceAddr);
 
         setContentView(buildUi(ip));
         alive.set(true);
@@ -324,44 +329,91 @@ public class FeaturesActivity extends Activity {
 
     // ---------------------------------------------------------------- 界面
 
+    private LinearLayout usageCard(String feature) {
+        LinearLayout c = card(feature + "功能使用说明");
+        c.addView(caption(UsageText.get(feature)));
+        return c;
+    }
+
+    private LinearLayout buildBottomNav() {
+        LinearLayout bar = hbox();
+        bar.setBackgroundColor(CARD);
+        bar.setPadding(dp(4), dp(6), dp(4), dp(6));
+
+        String[] names = { "设备控制", "设备状态", "硬件设置", "扩展功能", "设置" };
+        for (int i = 0; i < names.length; i++) {
+            Button b = button(names[i], i == 3 ? ACCENT : CARD2);
+            b.setTextSize(10.5f);
+            b.setLayoutParams(new LinearLayout.LayoutParams(0, dp(46), 1f));
+            final int idx = i;
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (idx == 3) {
+                        if (scroll != null) scroll.scrollTo(0, 0);
+                    } else {
+                        backToMain(idx);
+                    }
+                }
+            });
+            bar.addView(b);
+        }
+        return bar;
+    }
+
+    private void backToMain(int tab) {
+        Intent it = new Intent(FeaturesActivity.this, MainActivity.class);
+        it.putExtra("tab", tab);
+        it.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(it);
+        finish();
+    }
+
     private View buildUi(String ip) {
-        ScrollView scroll = new ScrollView(this);
+        LinearLayout outer = vbox();
+        outer.setBackgroundColor(BG);
+
+        scroll = new ScrollView(this);
         scroll.setBackgroundColor(BG);
         scroll.setFillViewport(true);
+        outer.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         LinearLayout root = vbox();
         root.setPadding(dp(16), dp(14), dp(16), dp(28));
         scroll.addView(root);
 
         root.addView(tv("扩展功能", 26f, TEXT, true));
-        TextView sub = tv("视觉识别 · 驱鸟策略 · 小车路线 · 天气与水阀", 12f, MUTED, false);
+        TextView sub = tv("视觉识别 · 驱鸟策略 · 小车路线 · 天气与水阀  ·  v3.21.5",
+                12f, MUTED, false);
         sub.setPadding(0, dp(4), 0, 0);
         root.addView(sub);
 
-        // 服务地址
-        LinearLayout conn = card(null);
-        LinearLayout row = hbox();
-        TextView l = tv("服务地址", 13f, MUTED, false);
-        l.setLayoutParams(new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(l);
-        conn.addView(row);
+        // 服务器 / 设备绑定
+        LinearLayout conn = card("服务器 / 设备绑定");
+        conn.addView(caption("硬件数据经服务器转发，服务器与设备均可手动填写"));
 
         LinearLayout addrRow = hbox();
-        addrView = input(api.base.replace("http://", ""), "192.168.4.1",
+        addrView = input(api.base.replace("http://", ""), "服务器 IP:端口",
                 android.text.InputType.TYPE_CLASS_TEXT);
-        addrView.setLayoutParams(new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        addrRow.addView(addrView);
+        LinearLayout.LayoutParams a1 = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        a1.topMargin = dp(8);
+        addrRow.addView(addrView, a1);
+        conn.addView(addrRow);
+
+        LinearLayout devRow = hbox();
+        deviceView = input(deviceAddr, "设备地址（可留空，由服务器选择）",
+                android.text.InputType.TYPE_CLASS_TEXT);
+        LinearLayout.LayoutParams d1 = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        d1.topMargin = dp(8);
+        devRow.addView(deviceView, d1);
 
         Button apply = button("应用", ACCENT);
         apply.setLayoutParams(new LinearLayout.LayoutParams(dp(78), dp(42)));
-        addrRow.addView(apply);
-
-        LinearLayout.LayoutParams addrLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        addrLp.topMargin = dp(8);
-        conn.addView(addrRow, addrLp);
+        devRow.addView(apply);
+        conn.addView(devRow);
         root.addView(conn);
 
         apply.setOnClickListener(new View.OnClickListener() {
@@ -369,21 +421,34 @@ public class FeaturesActivity extends Activity {
             public void onClick(View v) {
                 String s = addrView.getText().toString().trim();
                 if (s.length() == 0) s = "192.168.4.1";
-                prefs.edit().putString("ip", s).apply();
-                api = new DeviceApi(s);
+                String dev = deviceView.getText().toString().trim();
+                deviceAddr = dev;
+                prefs.edit().putString("server", s).putString("ip", s)
+                        .putString("device", dev).apply();
+                api = new DeviceApi(s, dev);
                 addrView.setText(api.base.replace("http://", ""));
-                toast("已切换到 " + api.base);
+                deviceView.setText(dev);
+                toast("已绑定 " + api.base.replace("http://", "")
+                        + (dev.length() == 0 ? "（自动选择设备）" : " / " + dev));
             }
         });
 
         addVisionCard(root, "pest", "病虫害识别",
                 "接入摄像头实时画面，由局域网 YOLOv8 服务识别虫害与病斑并标注位置。");
+        root.addView(usageCard("病虫害识别"));
         addVisionCard(root, "ppe", "人员防护服检测",
                 "接入摄像头实时画面，由 YOLOv8 检测安全帽与防护服，未穿戴时报警。");
+        root.addView(usageCard("人员防护服检测"));
         addStrategyCard(root);
+        root.addView(usageCard("驱鸟策略"));
         addRobotCard(root);
+        root.addView(usageCard("小车固定路线"));
         addWeatherCard(root);
-        return scroll;
+        root.addView(usageCard("天气预报与水阀"));
+
+        outer.addView(buildBottomNav(), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return outer;
     }
 
     // ---------------------------------------------------------------- 视觉
@@ -639,8 +704,25 @@ public class FeaturesActivity extends Activity {
         if ("ppe".equals(kind)) {
             sb.append("人员数量：").append(d.optInt("person_count", 0))
                     .append("  ·  报警：").append(alarm ? "是" : "否");
+            JSONObject wearing = d.optJSONObject("wearing");
+            if (wearing != null) {
+                sb.append('\n').append("穿戴合规：").append(wearing.optInt("compliant", 0))
+                        .append(" 人  ·  不合规：").append(wearing.optInt("violations", 0))
+                        .append(" 人");
+                int mh = wearing.optInt("missing_helmet", 0);
+                int mv = wearing.optInt("missing_vest", 0);
+                if (mh > 0) sb.append("  ·  缺安全帽 ").append(mh);
+                if (mv > 0) sb.append("  ·  缺防护服 ").append(mv);
+            }
+            String summary = d.optString("summary", "");
+            if (summary.length() > 0) sb.append('\n').append(summary);
+            if (!d.optBoolean("ppe_ready", true)) {
+                sb.append('\n').append("提示：当前权重不含穿戴类别，请放入 models/ppe.pt");
+            }
         } else {
             sb.append("识别到 ").append(dets.size()).append(" 个目标");
+            String severity = severityName(d.optString("severity", ""));
+            if (severity.length() > 0) sb.append("  ·  风险：").append(severity);
         }
         if (cost > 0) sb.append("  ·  ").append(cost).append(" ms");
         sb.append('\n');
@@ -1179,6 +1261,14 @@ public class FeaturesActivity extends Activity {
         } finally {
             c.disconnect();
         }
+    }
+
+    private static String severityName(String key) {
+        if ("none".equals(key)) return "未见明显病虫害";
+        if ("low".equals(key)) return "轻微";
+        if ("moderate".equals(key)) return "中等";
+        if ("high".equals(key)) return "严重";
+        return "";
     }
 
     private String advice(double temp, int hum, double rain) {

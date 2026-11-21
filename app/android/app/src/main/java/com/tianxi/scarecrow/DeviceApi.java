@@ -7,17 +7,27 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.Charset;
+import java.util.UUID;
 
 /** 与 ESP32 固件的 JSON / 表单接口通信，无第三方依赖。 */
 public class DeviceApi {
 
     private static final Charset UTF8 = Charset.forName("UTF-8");
+    /** 每个 App 进程一个客户端标识，服务器据此分配独立转发通道。 */
+    private static final String CLIENT_ID =
+            UUID.randomUUID().toString().replace("-", "");
 
     public final String base;
+    public final String device;
 
     public DeviceApi(String input) {
+        this(input, null);
+    }
+
+    public DeviceApi(String input, String deviceAddress) {
         String s = input == null ? "" : input.trim();
-        if (s.length() == 0) s = "192.168.4.1";
+        String d = deviceAddress == null ? "" : deviceAddress.trim();
+        if (s.length() == 0) s = d.length() == 0 ? "192.168.4.1" : d;
         if (!s.startsWith("http://") && !s.startsWith("https://")) {
             s = "http://" + s;
         }
@@ -25,6 +35,14 @@ public class DeviceApi {
             s = s.substring(0, s.length() - 1);
         }
         base = s;
+        device = d;
+    }
+
+    private void applyDevice(HttpURLConnection c) {
+        c.setRequestProperty("X-Client-Id", CLIENT_ID);
+        if (device.length() > 0) {
+            c.setRequestProperty("X-Device-Address", device);
+        }
     }
 
     public String get(String path) throws IOException {
@@ -105,6 +123,7 @@ public class DeviceApi {
         c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
         c.setRequestProperty("Accept", "application/json");
         c.setRequestProperty("Connection", "close");
+        applyDevice(c);
         try {
             OutputStream os = c.getOutputStream();
             try {
@@ -131,6 +150,7 @@ public class DeviceApi {
         c.setUseCaches(false);
         c.setRequestProperty("Accept", "application/json");
         c.setRequestProperty("Connection", "close");
+        applyDevice(c);
         return c;
     }
 

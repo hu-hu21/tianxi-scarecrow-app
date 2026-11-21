@@ -343,3 +343,23 @@ python3 tools/demo_server.py --port 1819 --advertise 47.94.214.62:1819
 ```
 
 部署、安全组和 systemd 配置见 [仿真服务器部署.md](仿真服务器部署.md)。
+
+## 14. 服务端转发与客户端通道
+
+Windows 11 服务端 `ScarecrowServer.exe` 监听端口（默认 1819），把客户端的
+`/api/*` 与 MJPEG 请求转发到绑定的设备，并维护每个客户端的独立通道。
+
+- 客户端在请求头带 `X-Client-Id`（启动时生成的随机字符串）
+- 客户端可用 `X-Device-Address` 指定设备；服务端首次解析后把该地址固定到通道
+- 没有 `X-Client-Id` 时按来源 IP 建立通道，兼容旧客户端
+- 监控接口：`GET /server/health`、`GET /server/channels`
+- 通道之间互不共享设备绑定，一个客户端切换设备不会影响其他客户端
+
+请求示例：
+
+```http
+GET /api/status HTTP/1.1
+Host: 127.0.0.1:1819
+X-Client-Id: 9f2c4a7b6d1e4c8f
+X-Device-Address: 192.168.1.66:80
+```

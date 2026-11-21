@@ -51,12 +51,21 @@ public class MainActivity extends Activity {
     private static final int AMBER = 0xFFF59E0B;
     private static final int LINE = 0xFF2A3B57;
 
-    private EditText ipView;
     private TextView pill;
     private TextView stateValue, vbatValue, lightValue, quietValue;
     private TextView pulsesValue, uptimeValue, fwValue, modeValue;
     private TextView logView;
     private Switch quietSwitch;
+
+    private ScrollView scroll;
+    private LinearLayout controlGroup, statusGroup, settingsGroup, aboutGroup;
+    private LinearLayout navBar;
+    private final java.util.List<Button> navButtons = new java.util.ArrayList<Button>();
+    private EditText serverView;
+    private EditText deviceView;
+    private int currentTab = 0;
+    private String serverAddr = "192.168.4.1";
+    private String deviceAddr = "";
 
     private final Map<String, Slider> sliders = new LinkedHashMap<String, Slider>();
     private DeviceApi api;
@@ -115,12 +124,21 @@ public class MainActivity extends Activity {
         getWindow().setNavigationBarColor(BG);
 
         prefs = getSharedPreferences("scarecrow", MODE_PRIVATE);
-        String savedIp = prefs.getString("ip", "192.168.4.1");
-        api = new DeviceApi(savedIp);
+        String savedIp = prefs.getString("server", prefs.getString("ip", "192.168.4.1"));
+        serverAddr = savedIp;
+        deviceAddr = prefs.getString("device", "");
+        api = new DeviceApi(serverAddr, deviceAddr);
 
         setContentView(buildUi(savedIp));
         startPolling();
         refresh(true);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent != null) selectTab(intent.getIntExtra("tab", 0));
     }
 
     @Override
@@ -239,10 +257,159 @@ public class MainActivity extends Activity {
         return row;
     }
 
+    private LinearLayout usageCard(String feature) {
+        LinearLayout c = card(feature + "功能使用说明");
+        TextView body = tv(UsageText.get(feature), 12f, MUTED, false);
+        body.setLineSpacing(dp(3), 1f);
+        c.addView(body);
+        return c;
+    }
+
+    private EditText field(String hint, String value, int type) {
+        EditText e = new EditText(this);
+        e.setText(value == null ? "" : value);
+        e.setTextSize(15f);
+        e.setTextColor(TEXT);
+        e.setHintTextColor(MUTED);
+        e.setHint(hint);
+        e.setSingleLine(true);
+        e.setInputType(type);
+        e.setBackground(shape(INPUT, 8));
+        e.setPadding(dp(12), dp(8), dp(12), dp(8));
+        return e;
+    }
+
+    private LinearLayout buildServerCard(String savedIp) {
+        LinearLayout c = card("服务器 / 设备绑定");
+        c.addView(tv("硬件数据经服务器转发，服务器地址与设备地址均可手动填写绑定",
+                12f, MUTED, false));
+
+        LinearLayout statusRow = hbox();
+        pill = tv("● 未连接", 13f, MUTED, true);
+        pill.setLayoutParams(new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        statusRow.addView(pill);
+        Button find = button("查找设备", CARD2);
+        find.setLayoutParams(new LinearLayout.LayoutParams(dp(104), dp(38)));
+        find.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                findDevice();
+            }
+        });
+        statusRow.addView(find);
+        LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        statusLp.topMargin = dp(10);
+        c.addView(statusRow, statusLp);
+
+        TextView serverLabel = tv("服务器地址", 12f, MUTED, false);
+        LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        labelLp.topMargin = dp(10);
+        c.addView(serverLabel, labelLp);
+
+        serverView = field("例如 47.94.214.62:1819", savedIp, InputType.TYPE_CLASS_TEXT);
+        c.addView(serverView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView deviceLabel = tv("设备地址（服务器所在局域网内，可留空）", 12f, MUTED, false);
+        LinearLayout.LayoutParams label2Lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        label2Lp.topMargin = dp(8);
+        c.addView(deviceLabel, label2Lp);
+
+        deviceView = field("例如 192.168.1.66:8080", deviceAddr, InputType.TYPE_CLASS_TEXT);
+        c.addView(deviceView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Button bind = button("保存并绑定", ACCENT);
+        bind.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        lp.topMargin = dp(10);
+        c.addView(bind, lp);
+
+        bind.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                String addr = serverView.getText().toString().trim();
+                if (addr.length() == 0) addr = "192.168.4.1";
+                String dev = deviceView.getText().toString().trim();
+                serverAddr = addr;
+                deviceAddr = dev;
+                serverView.setText(addr);
+                deviceView.setText(dev);
+                prefs.edit()
+                        .putString("server", addr)
+                        .putString("device", dev)
+                        .putString("ip", addr)
+                        .apply();
+                api = new DeviceApi(addr, dev);
+                configLoaded = false;
+                log(dev.length() == 0
+                        ? "已绑定服务器 " + addr + "（自动选择设备）"
+                        : "已绑定服务器 " + addr + " / 设备 " + dev);
+                refresh(true);
+            }
+        });
+        return c;
+    }
+
+    private LinearLayout buildBottomNav() {
+        navBar = hbox();
+        navBar.setBackgroundColor(CARD);
+        navBar.setPadding(dp(4), dp(6), dp(4), dp(6));
+
+        String[] names = { "设备控制", "设备状态", "硬件设置", "扩展功能", "设置" };
+        for (int i = 0; i < names.length; i++) {
+            Button b = button(names[i], i == 0 ? ACCENT : CARD2);
+            b.setTextSize(10.5f);
+            b.setLayoutParams(new LinearLayout.LayoutParams(0, dp(46), 1f));
+            final int idx = i;
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    if (idx == 3) openFeatures();
+                    else selectTab(idx);
+                }
+            });
+            navBar.addView(b);
+            navButtons.add(b);
+        }
+        return navBar;
+    }
+
+    private void openFeatures() {
+        Intent it = new Intent(MainActivity.this, FeaturesActivity.class);
+        it.putExtra("ip", api.base.replace("http://", "").replace("https://", ""));
+        it.putExtra("device", deviceAddr);
+        startActivity(it);
+    }
+
+    private void selectTab(int tab) {
+        currentTab = tab;
+        if (controlGroup == null) return;
+        controlGroup.setVisibility(tab == 0 ? View.VISIBLE : View.GONE);
+        statusGroup.setVisibility(tab == 1 ? View.VISIBLE : View.GONE);
+        settingsGroup.setVisibility(tab == 2 ? View.VISIBLE : View.GONE);
+        aboutGroup.setVisibility(tab == 4 ? View.VISIBLE : View.GONE);
+        for (int i = 0; i < navButtons.size(); i++) {
+            navButtons.get(i).setBackground(shape(i == tab ? ACCENT : CARD2, 10));
+        }
+        if (scroll != null) scroll.scrollTo(0, 0);
+    }
+
     private View buildUi(String savedIp) {
-        ScrollView scroll = new ScrollView(this);
+        LinearLayout outer = vbox();
+        outer.setBackgroundColor(BG);
+
+        scroll = new ScrollView(this);
         scroll.setBackgroundColor(BG);
         scroll.setFillViewport(true);
+        outer.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         LinearLayout root = vbox();
         root.setPadding(dp(16), dp(14), dp(16), dp(24));
@@ -250,63 +417,21 @@ public class MainActivity extends Activity {
 
         TextView title = tv("稻草人驱鸟", 26f, TEXT, true);
         root.addView(title);
-        TextView sub = tv("Android 控制台  ·  设备热点直连", 12f, MUTED, false);
+        TextView sub = tv("Android 控制台  ·  v3.21.5  ·  经服务器转发", 12f, MUTED, false);
         sub.setPadding(0, dp(4), 0, 0);
         root.addView(sub);
 
-        // 连接卡片
-        LinearLayout conn = card(null);
-        LinearLayout ipRow = hbox();
-
-        ipView = new EditText(this);
-        ipView.setText(savedIp);
-        ipView.setTextSize(15f);
-        ipView.setTextColor(TEXT);
-        ipView.setHintTextColor(MUTED);
-        ipView.setHint("192.168.4.1");
-        ipView.setSingleLine(true);
-        ipView.setInputType(InputType.TYPE_CLASS_TEXT);
-        ipView.setBackground(shape(INPUT, 8));
-        ipView.setPadding(dp(12), dp(8), dp(12), dp(8));
-        LinearLayout.LayoutParams ipLp = new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        ipRow.addView(ipView, ipLp);
-
-        Button connect = button("连接", ACCENT);
-        connect.setLayoutParams(new LinearLayout.LayoutParams(dp(78), dp(44)));
-        ipRow.addView(connect);
-
-        LinearLayout.LayoutParams ipRowLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        conn.addView(ipRow, ipRowLp);
-
-        LinearLayout pillRow = hbox();
-        pill = tv("● 未连接", 13f, MUTED, true);
-        pill.setLayoutParams(new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        pillRow.addView(pill);
-
-        Button find = button("查找设备", CARD2);
-        find.setLayoutParams(new LinearLayout.LayoutParams(dp(104), dp(38)));
-        pillRow.addView(find);
-
-        LinearLayout.LayoutParams pillLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        pillLp.topMargin = dp(10);
-        conn.addView(pillRow, pillLp);
-        root.addView(conn);
-
-        // 状态卡片
-        LinearLayout status = card("设备状态");
-        stateValue = addStatusRow(status, "运行状态");
-        vbatValue = addStatusRow(status, "电池电压");
-        lightValue = addStatusRow(status, "光照环境");
-        quietValue = addStatusRow(status, "静音时段");
-        pulsesValue = addStatusRow(status, "雷达脉冲");
-        uptimeValue = addStatusRow(status, "在线时长");
-        fwValue = addStatusRow(status, "固件版本");
-        modeValue = addStatusRow(status, "网络模式");
-        root.addView(status);
+        controlGroup = vbox();
+        statusGroup = vbox();
+        statusGroup.setVisibility(View.GONE);
+        settingsGroup = vbox();
+        settingsGroup.setVisibility(View.GONE);
+        aboutGroup = vbox();
+        aboutGroup.setVisibility(View.GONE);
+        root.addView(controlGroup);
+        root.addView(statusGroup);
+        root.addView(settingsGroup);
+        root.addView(aboutGroup);
 
         // 快捷操作
         LinearLayout actions = card("快捷操作");
@@ -321,19 +446,23 @@ public class MainActivity extends Activity {
         Button stop = button("停止输出", RED);
         Button web = button("网页控制台", CARD2);
         actions.addView(buttonRow(stop, web));
-        root.addView(actions);
+        controlGroup.addView(actions);
 
-        // 扩展功能
-        LinearLayout features = card("扩展功能");
-        TextView featuresHint = tv("病虫害识别 · 防护服检测 · 驱鸟策略 · 小车路线 · 天气与水阀",
-                12f, MUTED, false);
-        features.addView(featuresHint);
-        Button openFeatures = button("进入扩展功能", ACCENT);
-        LinearLayout.LayoutParams ofLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
-        ofLp.topMargin = dp(10);
-        features.addView(openFeatures, ofLp);
-        root.addView(features);
+        // 设备状态
+        LinearLayout status = card("设备状态");
+        stateValue = addStatusRow(status, "运行状态");
+        vbatValue = addStatusRow(status, "电池电压");
+        lightValue = addStatusRow(status, "光照环境");
+        quietValue = addStatusRow(status, "静音时段");
+        pulsesValue = addStatusRow(status, "雷达脉冲");
+        uptimeValue = addStatusRow(status, "在线时长");
+        fwValue = addStatusRow(status, "固件版本");
+        modeValue = addStatusRow(status, "网络模式");
+        statusGroup.addView(status);
+        statusGroup.addView(usageCard("设备状态"));
+
+        // 服务器连接（硬件数据经服务器转发）
+        settingsGroup.addView(buildServerCard(savedIp));
 
         // 参数配置
         LinearLayout config = card("参数配置");
@@ -388,21 +517,30 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         exLp.topMargin = dp(8);
         config.addView(extra, exLp);
-        root.addView(config);
+        settingsGroup.addView(config);
+        settingsGroup.addView(usageCard("硬件设置"));
 
-        // 日志
-        LinearLayout logCard = card("日志");
+        // 设备控制使用说明
+        controlGroup.addView(usageCard("设备控制"));
+
+        // 设置：运行日志
+        LinearLayout logCard = card("运行日志");
         logView = tv("", 11f, MUTED, false);
         logView.setTypeface(Typeface.MONOSPACE);
         logView.setLineSpacing(dp(2), 1f);
         logCard.addView(logView);
-        root.addView(logCard);
+        aboutGroup.addView(logCard);
 
-        // 关于
-        LinearLayout about = card("关于");
+        // 开发警示
+        LinearLayout about = card("开发警示");
+        TextView version = tv("版本 3.21.5", 13f, ACCENT, true);
+        about.addView(version);
         TextView copyright = tv("Copyright (C) 2026 【胡宇宸/tj248511fg51/y9000p】",
                 12f, TEXT, true);
-        about.addView(copyright);
+        LinearLayout.LayoutParams cpLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cpLp.topMargin = dp(6);
+        about.addView(copyright, cpLp);
 
         TextView terms = tv(
                 "本程序为独立原创作品，版权归作者所有。\n"
@@ -414,29 +552,10 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         termsLp.topMargin = dp(6);
         about.addView(terms, termsLp);
-        root.addView(about);
+        aboutGroup.addView(about);
+        aboutGroup.addView(usageCard("设置"));
 
         // 事件
-        connect.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                String ip = ipView.getText().toString().trim();
-                if (ip.length() == 0) ip = "192.168.4.1";
-                prefs.edit().putString("ip", ip).apply();
-                api = new DeviceApi(ip);
-                configLoaded = false;
-                log("连接 " + api.base);
-                refresh(true);
-            }
-        });
-
-        find.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                findDevice();
-            }
-        });
-
         testAll.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -477,14 +596,6 @@ public class MainActivity extends Activity {
                 }
             }
         });
-        openFeatures.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                Intent it = new Intent(MainActivity.this, FeaturesActivity.class);
-                it.putExtra("ip", api.base.replace("http://", "").replace("https://", ""));
-                startActivity(it);
-            }
-        });
         save.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -520,7 +631,10 @@ public class MainActivity extends Activity {
             }
         });
 
-        return scroll;
+        outer.addView(buildBottomNav(), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        selectTab(getIntent().getIntExtra("tab", 0));
+        return outer;
     }
 
     private Button smallButton(String text) {
@@ -835,7 +949,7 @@ public class MainActivity extends Activity {
                 }
                 if (found == null) {
                     try {
-                        new DeviceApi("192.168.4.1").get("/api/status");
+                        new DeviceApi("192.168.4.1", deviceAddr).get("/api/status");
                         found = "192.168.4.1";
                     } catch (Exception ignored) {
                     }
@@ -850,9 +964,11 @@ public class MainActivity extends Activity {
                                     "未发现设备，请先连接设备热点", Toast.LENGTH_LONG).show();
                             return;
                         }
-                        ipView.setText(result);
-                        prefs.edit().putString("ip", result).apply();
-                        api = new DeviceApi(result);
+                        serverView.setText(result);
+                        serverAddr = result;
+                        prefs.edit().putString("server", result)
+                                .putString("ip", result).apply();
+                        api = new DeviceApi(result, deviceAddr);
                         configLoaded = false;
                         log("已发现 " + result);
                         refresh(true);

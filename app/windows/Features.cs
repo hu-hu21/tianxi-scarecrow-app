@@ -34,6 +34,8 @@ namespace ScarecrowControl
         private WeatherPanel _weather;
         private System.Windows.Forms.Timer _timer;
 
+        public int NavigateTo = -1;
+
         public FeaturesForm(string ip) : this(ip, 0) { }
 
         public FeaturesForm(string ip, int startPage)
@@ -42,7 +44,7 @@ namespace ScarecrowControl
             if (_ip.Length == 0) _ip = "192.168.4.1";
 
             Text = "稻草人驱鸟控制器 - 扩展功能";
-            ClientSize = new Size(1000, 700);
+            ClientSize = new Size(1000, 850);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterParent;
@@ -65,6 +67,7 @@ namespace ScarecrowControl
 
             BuildNav();
             BuildPages();
+            BuildBottomNav();
             Switch(startPage < 0 || startPage >= _pages.Count ? 0 : startPage);
 
             _timer = new System.Windows.Forms.Timer();
@@ -98,7 +101,7 @@ namespace ScarecrowControl
         {
             _host = new Panel();
             _host.Location = new Point(180, 84);
-            _host.Size = new Size(800, 594);
+            _host.Size = new Size(800, 700);
             _host.BackColor = Theme.Bg;
             Controls.Add(_host);
 
@@ -119,6 +122,51 @@ namespace ScarecrowControl
                 _host.Controls.Add(p);
                 _pages.Add(p);
             }
+        }
+
+        private void BuildBottomNav()
+        {
+            Panel bar = new Panel();
+            bar.Dock = DockStyle.Bottom;
+            bar.Height = 64;
+            bar.BackColor = Theme.Card;
+            Controls.Add(bar);
+
+            Panel line = new Panel();
+            line.Dock = DockStyle.Top;
+            line.Height = 1;
+            line.BackColor = Theme.CardEdge;
+            bar.Controls.Add(line);
+
+            string[] names = { "设备控制", "设备状态", "硬件设置", "扩展功能", "设置" };
+            for (int i = 0; i < names.Length; i++)
+            {
+                UiButton b = new UiButton(names[i], i == 3 ? Theme.Accent : Theme.Card);
+                b.Location = new Point(16 + i * 190, 10);
+                b.Size = new Size(174, 44);
+                b.Font = new Font("Microsoft YaHei UI", 10.5f);
+                int idx = i;
+                b.Click += delegate
+                {
+                    if (idx == 3) return;
+                    NavigateTo = idx;
+                    Close();
+                };
+                bar.Controls.Add(b);
+            }
+        }
+
+        public static void AddUsage(Panel parent, int y, string feature, int height)
+        {
+            CardPanel card = new CardPanel();
+            card.Location = new Point(16, y);
+            card.Size = new Size(764, height);
+            parent.Controls.Add(card);
+
+            card.Controls.Add(Ui.Lbl(feature + "功能使用说明", 16, 10, 720, 26, 11f, true, Theme.Accent));
+            Label body = Ui.Lbl(UsageText.Get(feature), 16, 40, 730, height - 50, 9.5f, false, Theme.Muted);
+            body.TextAlign = ContentAlignment.TopLeft;
+            card.Controls.Add(body);
         }
 
         private void Switch(int index)
@@ -276,6 +324,7 @@ namespace ScarecrowControl
             req.ReadWriteTimeout = 20000;
             req.KeepAlive = false;
             req.UserAgent = "ScarecrowControl/1.0";
+            req.Headers["X-Client-Id"] = Http.ClientId;
             return req;
         }
 
@@ -514,6 +563,8 @@ namespace ScarecrowControl
 
             _status = Ui.Lbl("等待操作", 16, 528, 760, 24, 9f, false, Theme.Muted);
             Controls.Add(_status);
+
+            FeaturesForm.AddUsage(this, 560, title, 172);
 
             _tick = new System.Windows.Forms.Timer();
             _tick.Interval = 800;
@@ -809,8 +860,39 @@ namespace ScarecrowControl
             {
                 object pc;
                 int persons = root.TryGetValue("person_count", out pc) ? ToInt(pc, 0) : 0;
-                sb.Insert(0, string.Format("人员 {0} 人 · {1}\r\n\r\n", persons,
-                    _alarm ? "发现违规，需整改" : "未发现违规"));
+                StringBuilder head = new StringBuilder();
+                head.AppendFormat("人员 {0} 人 · {1}\r\n", persons,
+                    _alarm ? "发现违规，需整改" : "未发现违规");
+
+                object wv;
+                if (root.TryGetValue("wearing", out wv))
+                {
+                    Dictionary<string, object> wearing = wv as Dictionary<string, object>;
+                    if (wearing != null)
+                    {
+                        int ok = wearing.ContainsKey("compliant") ? ToInt(wearing["compliant"], 0) : 0;
+                        int bad = wearing.ContainsKey("violations") ? ToInt(wearing["violations"], 0) : 0;
+                        int mh = wearing.ContainsKey("missing_helmet") ? ToInt(wearing["missing_helmet"], 0) : 0;
+                        int mv = wearing.ContainsKey("missing_vest") ? ToInt(wearing["missing_vest"], 0) : 0;
+                        head.AppendFormat("穿戴合规 {0} 人 · 不合规 {1} 人", ok, bad);
+                        if (mh > 0) head.AppendFormat(" · 缺安全帽 {0}", mh);
+                        if (mv > 0) head.AppendFormat(" · 缺防护服 {0}", mv);
+                        head.AppendLine();
+                    }
+                }
+                object sm;
+                if (root.TryGetValue("summary", out sm) && sm != null)
+                    head.AppendLine(sm.ToString());
+                object ready;
+                if (root.TryGetValue("ppe_ready", out ready) && !ToBool(ready))
+                    head.AppendLine("提示：当前权重不含穿戴类别，请放入 models/ppe.pt 后重启识别服务。");
+                sb.Insert(0, head.ToString() + "\r\n");
+            }
+            else if (_kind == "pest")
+            {
+                object sm;
+                if (root.TryGetValue("summary", out sm) && sm != null)
+                    sb.Insert(0, sm.ToString() + "\r\n\r\n");
             }
             _result.Text = sb.ToString();
             _pic.Invalidate();
@@ -942,6 +1024,8 @@ namespace ScarecrowControl
 
             _status = Ui.Lbl("未读取状态", 20, 196, 720, 24, 9f, false, Theme.Muted);
             card.Controls.Add(_status);
+
+            FeaturesForm.AddUsage(this, 340, "驱鸟策略", 130);
         }
 
         private void Apply()
@@ -1074,6 +1158,8 @@ namespace ScarecrowControl
 
             Controls.Add(Ui.Lbl("说明：X/Y 为相对起点的米数；动作执行完才前往下一点。", 16, 540, 764, 22,
                 9f, false, Theme.Muted));
+
+            FeaturesForm.AddUsage(this, 570, "小车固定路线", 124);
 
             AddRow();
         }
@@ -1330,6 +1416,8 @@ namespace ScarecrowControl
 
             v.Controls.Add(Ui.Lbl("安全联锁：降雨、超时（默认 300 秒）、断线时自动关阀。",
                 20, 148, 720, 24, 9f, false, Theme.Muted));
+
+            FeaturesForm.AddUsage(this, 516, "天气预报与水阀", 156);
         }
 
         private TextBox Input(string text, int x, int y, int w)

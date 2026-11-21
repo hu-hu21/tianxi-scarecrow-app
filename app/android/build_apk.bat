@@ -54,7 +54,7 @@ echo [1/6] compile resources
 "%BT%\aapt2.exe" compile --dir "%WORK%\app\src\main\res" -o "%WORK%\build\res.zip" || goto :fail
 
 echo [2/6] link resources and manifest
-"%BT%\aapt2.exe" link -o "%WORK%\build\base.apk" -I "%AJ%" --manifest "%WORK%\app\src\main\AndroidManifest.xml" "%WORK%\build\res.zip" --min-sdk-version 24 --target-sdk-version 34 --version-code 1 --version-name 1.0 || goto :fail
+"%BT%\aapt2.exe" link -o "%WORK%\build\base.apk" -I "%AJ%" --manifest "%WORK%\app\src\main\AndroidManifest.xml" "%WORK%\build\res.zip" --min-sdk-version 24 --target-sdk-version 34 --version-code 3215 --version-name 3.21.5 || goto :fail
 
 echo [3/6] compile java sources
 dir /s /b "%WORK%\app\src\main\java\*.java" > "%WORK%\build\sources.txt"
