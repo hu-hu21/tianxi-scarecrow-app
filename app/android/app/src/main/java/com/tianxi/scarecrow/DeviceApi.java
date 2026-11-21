@@ -13,9 +13,11 @@ import java.util.UUID;
 public class DeviceApi {
 
     private static final Charset UTF8 = Charset.forName("UTF-8");
-    /** 每个 App 进程一个客户端标识，服务器据此分配独立转发通道。 */
+    /** 每一个 App 进程一个客户端标识，服务器据此分配独立转发通道。 */
     private static final String CLIENT_ID =
             UUID.randomUUID().toString().replace("-", "");
+    /** 登录后由 LoginActivity 写入，随每个请求发送。 */
+    public static String TOKEN = "";
 
     public final String base;
     public final String device;
@@ -40,6 +42,9 @@ public class DeviceApi {
 
     private void applyDevice(HttpURLConnection c) {
         c.setRequestProperty("X-Client-Id", CLIENT_ID);
+        if (TOKEN != null && TOKEN.length() > 0) {
+            c.setRequestProperty("X-Auth-Token", TOKEN);
+        }
         if (device.length() > 0) {
             c.setRequestProperty("X-Device-Address", device);
         }

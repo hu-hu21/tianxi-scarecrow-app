@@ -30,7 +30,11 @@ public class SplashActivity extends Activity {
         public void run() {
             if (entered) return;
             entered = true;
-            startActivity(new Intent(SplashActivity.this, MainActivity.class));
+            String token = getSharedPreferences("scarecrow", MODE_PRIVATE)
+                    .getString("token", "");
+            Class<?> next = token != null && token.length() > 0
+                    ? MainActivity.class : LoginActivity.class;
+            startActivity(new Intent(SplashActivity.this, next));
             overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
             finish();
         }

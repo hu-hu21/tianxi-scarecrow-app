@@ -1,6 +1,5 @@
 # 编译产物（不入库）
 app/windows/dist/
-app/windows-server/dist/
 app/windows/bin/
 app/windows/obj/
 app/android/dist/
@@ -10,9 +9,6 @@ app/android/.gradle/
 app/android/.idea/
 app/android/local.properties
 app/android/keystore/
-tools/__pycache__/
-models/*.pt
-docs/video/_*.png
 
 # 安装包与二进制
 *.apk
@@ -28,3 +24,9 @@ docs/video/_*.png
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 本地运行数据（账号、令牌、登录状态）
+accounts.cfg
+server.cfg
+login.ini
+.writing/

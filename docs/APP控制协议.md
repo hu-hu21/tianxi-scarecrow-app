@@ -344,22 +344,87 @@ python3 tools/demo_server.py --port 1819 --advertise 47.94.214.62:1819
 
 部署、安全组和 systemd 配置见 [仿真服务器部署.md](仿真服务器部署.md)。
 
-## 14. 服务端转发与客户端通道
+## 14. 账号与客户硬件（服务端）
 
-Windows 11 服务端 `ScarecrowServer.exe` 监听端口（默认 1819），把客户端的
-`/api/*` 与 MJPEG 请求转发到绑定的设备，并维护每个客户端的独立通道。
+本节接口由 `ScarecrowServer` 提供。除注册、登录外，均需在请求头携带
+`X-Auth-Token: <token>`（也接受 `Authorization: Bearer <token>`）。
 
-- 客户端在请求头带 `X-Client-Id`（启动时生成的随机字符串）
-- 客户端可用 `X-Device-Address` 指定设备；服务端首次解析后把该地址固定到通道
-- 没有 `X-Client-Id` 时按来源 IP 建立通道，兼容旧客户端
-- 监控接口：`GET /server/health`、`GET /server/channels`
-- 通道之间互不共享设备绑定，一个客户端切换设备不会影响其他客户端
+### POST /account/register
 
-请求示例：
-
-```http
-GET /api/status HTTP/1.1
-Host: 127.0.0.1:1819
-X-Client-Id: 9f2c4a7b6d1e4c8f
-X-Device-Address: 192.168.1.66:80
+```json
+{"username":"farmer01","password":"******","display":"一号田"}
 ```
+
+### POST /account/login
+
+```json
+{"username":"farmer01","password":"******"}
+```
+
+注册与登录成功返回：
+
+```json
+{"code":0,"token":"<64位令牌>","user":"farmer01","display":"一号田","device":"key:..."}
+```
+
+`code != 0` 时返回 `{"code":1,"msg":"..."}`。令牌有效期 7 天，失效后接口返回 `401`。
+
+### GET /account/me
+
+返回当前账号、显示名与当前设备引用。
+
+### GET /account/devices
+
+```json
+{"code":0,"count":2,"devices":[
+  {"name":"测试设备","ref":"127.0.0.1:1819","address":"127.0.0.1:1819",
+   "key":"","custom":false,"owner":"farmer01","current":true,"online":false,"reports":0},
+  {"name":"客户硬件","ref":"key:e89832f668014cfa","address":"",
+   "key":"e89832f668014cfa","custom":true,"owner":"farmer01","current":false,"online":true,"reports":12}
+]}
+```
+
+- `ref` 是客户端的设备引用：标准硬件为 `IP:端口`，客户硬件为 `key:<密钥>`。
+- 客户端请求 `/api/*` 时用 `X-Device-Address: <ref>` 指定设备。
+- 账号只能访问自己名下的设备；访问他人设备返回 `403`。
+
+### POST /account/devices
+
+```json
+{"name":"客户硬件","address":"","key":"","custom":"1"}
+```
+
+`address` 为空或 `custom=1` 时按客户自定义硬件登记，`key` 留空则由服务端生成 16 位密钥。
+
+### POST /account/select
+
+```json
+{"ref":"key:e89832f668014cfa"}
+```
+
+把该设备设为当前账号的默认设备。
+
+### POST /account/logout
+
+注销当前令牌。
+
+### 客户硬件上报（设备侧）
+
+客户自有硬件不需要暴露端口，只需主动访问服务端：
+
+| 接口 | 说明 |
+|---|---|
+| `POST /device/report` | 上报 `{"key":"<密钥>","status":{...},"config":{...}}`，同时取回待执行指令 |
+| `GET /device/command?key=<密钥>` | 单独拉取待执行指令 |
+
+`status` 字段与 `GET /api/status` 一致；`config` 与 `GET /api/config` 一致。
+服务端收到后缓存，客户端读取的是缓存值，未上报时返回 `state=OFFLINE`。
+
+`POST /device/report` 返回：
+
+```json
+{"code":0,"device":"客户硬件","online":true,"command":{"type":"test","method":"POST","path":"/api/test","body":"..."}}
+```
+
+客户端下发的 `/api/*` 请求会以 `command` 形式排队，硬件下次上报或拉取时取走。
+摄像头、视觉接口对客户硬件返回 `501`。

@@ -8,6 +8,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 namespace ScarecrowServer
@@ -121,10 +122,36 @@ namespace ScarecrowServer
         public string Name = "";
         public string Address = "";
         public bool Current;
+        /// <summary>设备归属账号；空表示公共设备。</summary>
+        public string Owner = "";
+        /// <summary>客户自定义硬件的上报密钥。</summary>
+        public string Key = "";
+        /// <summary>true 表示数据由客户硬件主动上报，服务端不反向连接设备。</summary>
+        public bool Custom;
+        public long Reports;
+        public DateTime LastSeen = DateTime.MinValue;
+        public string LastStatus = "";
+        public string LastConfig = "";
+        public string PendingCommand = "";
+
+        /// <summary>客户端选择设备时使用的唯一引用：有地址用地址，否则用密钥。</summary>
+        public string Ref
+        {
+            get { return Address.Length > 0 ? Address : "key:" + Key; }
+        }
+
+        public bool Online
+        {
+            get { return Custom && (DateTime.Now - LastSeen).TotalSeconds < 45; }
+        }
 
         public override string ToString()
         {
-            return (Current ? "★ " : "   ") + Name + "   " + Address;
+            string type = Custom ? " [客户硬件]" : "";
+            string online = Custom ? (Online ? " · 在线" : " · 离线") : "";
+            string owner = Owner.Length > 0 ? " · " + Owner : "";
+            string where = Address.Length > 0 ? Address : "密钥 " + Key;
+            return (Current ? "★ " : "   ") + Name + type + "   " + where + online + owner;
         }
     }
 
@@ -169,6 +196,7 @@ namespace ScarecrowServer
         private volatile bool _running;
         private readonly ConcurrentDictionary<string, ClientChannel> _channels =
             new ConcurrentDictionary<string, ClientChannel>();
+        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
 
         public int Port;
         public int Requests;
@@ -282,6 +310,7 @@ namespace ScarecrowServer
                         string json = "{\"ok\":true,\"version\":\"3.21.5\",\"port\":" + Port
                             + ",\"requests\":" + Requests
                             + ",\"channels\":" + ChannelCount
+                            + ",\"accounts\":" + AccountStore.Count
                             + ",\"active\":\"" + JsonEscape(ActiveAddress == null ? "" : (ActiveAddress() ?? "")) + "\"}";
                         WriteText(cs, "200 OK", "application/json; charset=utf-8", json);
                         return;
@@ -306,32 +335,89 @@ namespace ScarecrowServer
                         return;
                     }
 
+                    string bodyText = body == null ? "" : Encoding.UTF8.GetString(body);
+
+                    if (pathOnly.StartsWith("/account/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        HandleAccount(cs, method, pathOnly, headers, bodyText);
+                        return;
+                    }
+                    if (pathOnly == "/device/report" || pathOnly == "/device/command")
+                    {
+                        HandleDeviceApi(cs, method, path, pathOnly, headers, bodyText);
+                        return;
+                    }
+
+                    Account account = AccountStore.Auth(TokenOf(headers));
+                    if (pathOnly.StartsWith("/api/", StringComparison.OrdinalIgnoreCase) && account == null)
+                    {
+                        WriteText(cs, "401 Unauthorized", "application/json; charset=utf-8",
+                            "{\"code\":401,\"msg\":\"请先登录\"}");
+                        return;
+                    }
+
                     ClientChannel channel = GetChannel(clientId, remote);
 
                     string wanted = null;
                     string hv;
                     if (headers.TryGetValue("x-device-address", out hv)) wanted = hv;
 
+                    Device picked = null;
                     string address = null;
                     if (!string.IsNullOrEmpty(wanted))
                     {
-                        if (ResolveDevice != null)
-                        {
-                            Device d = ResolveDevice(wanted);
-                            if (d != null) address = d.Address;
-                        }
-                        if (string.IsNullOrEmpty(address)) address = wanted;
+                        picked = AccountStore.FindDevice(wanted);
+                        if (picked == null && ResolveDevice != null) picked = ResolveDevice(wanted);
+                        address = picked != null ? picked.Ref : wanted;
                         channel.DeviceAddress = address;
                     }
                     else if (!string.IsNullOrEmpty(channel.DeviceAddress))
                     {
                         // 通道已绑定设备：后续请求固定走该设备，不受其他客户端或全局“当前设备”影响。
                         address = channel.DeviceAddress;
+                        picked = AccountStore.FindDevice(address);
+                    }
+
+                    if (picked == null && account != null && account.Device.Length > 0)
+                    {
+                        picked = AccountStore.FindDevice(account.Device);
+                        if (picked != null)
+                        {
+                            address = picked.Ref;
+                            channel.DeviceAddress = address;
+                        }
+                    }
+                    if (picked == null && account != null && string.IsNullOrEmpty(address))
+                    {
+                        // 新账号还没有选择设备时，默认使用自己名下或公共设备的第一台。
+                        foreach (Device d in AccountStore.DevicesFor(account.User))
+                        {
+                            picked = d;
+                            address = d.Ref;
+                            channel.DeviceAddress = address;
+                            break;
+                        }
                     }
                     if (string.IsNullOrEmpty(address) && ActiveAddress != null)
                     {
                         address = ActiveAddress();
+                        picked = AccountStore.FindDevice(address);
                         channel.DeviceAddress = address;
+                    }
+
+                    if (picked != null && account != null && !AccountStore.CanUse(account, picked))
+                    {
+                        WriteText(cs, "403 Forbidden", "application/json; charset=utf-8",
+                            "{\"code\":403,\"msg\":\"该设备不属于当前账号\"}");
+                        return;
+                    }
+
+                    if (picked != null && picked.Custom)
+                    {
+                        Interlocked.Increment(ref Requests);
+                        Interlocked.Increment(ref channel.Requests);
+                        HandleCustom(cs, method, path, pathOnly, headers, bodyText, picked);
+                        return;
                     }
 
                     string host;
@@ -402,6 +488,347 @@ namespace ScarecrowServer
                     if (Log != null) Log("代理异常：" + ex.Message);
                 }
             }
+        }
+
+        // ------------------------------------------------------------ 账号与客户硬件
+
+        private static string TokenOf(Dictionary<string, string> headers)
+        {
+            string t;
+            if (headers.TryGetValue("x-auth-token", out t) && !string.IsNullOrEmpty(t))
+                return t.Trim();
+            if (headers.TryGetValue("authorization", out t) && !string.IsNullOrEmpty(t))
+            {
+                t = t.Trim();
+                if (t.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                    return t.Substring(7).Trim();
+            }
+            return "";
+        }
+
+        private static string Get(Dictionary<string, string> f, string key)
+        {
+            string v;
+            return f.TryGetValue(key, out v) ? (v ?? "").Trim() : "";
+        }
+
+        private static Dictionary<string, string> Fields(string body, Dictionary<string, string> headers)
+        {
+            Dictionary<string, string> map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            string text = (body ?? "").Trim();
+            if (text.Length == 0) return map;
+            string ct;
+            headers.TryGetValue("content-type", out ct);
+            if (text.StartsWith("{"))
+            {
+                try
+                {
+                    Dictionary<string, object> obj = Json.Deserialize<Dictionary<string, object>>(text);
+                    foreach (KeyValuePair<string, object> kv in obj)
+                        map[kv.Key] = Convert.ToString(kv.Value, CultureInfo.InvariantCulture);
+                }
+                catch { }
+                return map;
+            }
+            foreach (string pair in text.Split('&'))
+            {
+                if (pair.Length == 0) continue;
+                int eq = pair.IndexOf('=');
+                string k = eq < 0 ? pair : pair.Substring(0, eq);
+                string v = eq < 0 ? "" : pair.Substring(eq + 1);
+                map[UrlDecode(k)] = UrlDecode(v);
+            }
+            return map;
+        }
+
+        private static string UrlDecode(string s)
+        {
+            try { return Uri.UnescapeDataString((s ?? "").Replace("+", " ")); }
+            catch { return s ?? ""; }
+        }
+
+        private static string QueryParam(string path, string key)
+        {
+            int q = path.IndexOf('?');
+            if (q < 0) return "";
+            foreach (string pair in path.Substring(q + 1).Split('&'))
+            {
+                int eq = pair.IndexOf('=');
+                string k = eq < 0 ? pair : pair.Substring(0, eq);
+                if (string.Equals(UrlDecode(k), key, StringComparison.OrdinalIgnoreCase))
+                    return eq < 0 ? "" : UrlDecode(pair.Substring(eq + 1));
+            }
+            return "";
+        }
+
+        private static Dictionary<string, object> DeviceDict(Device d)
+        {
+            Dictionary<string, object> o = new Dictionary<string, object>();
+            o["name"] = d.Name;
+            o["ref"] = d.Ref;
+            o["address"] = d.Address;
+            o["key"] = d.Key;
+            o["custom"] = d.Custom;
+            o["owner"] = d.Owner;
+            o["current"] = d.Current;
+            o["online"] = d.Online;
+            o["reports"] = d.Reports;
+            o["last_seen"] = d.LastSeen == DateTime.MinValue ? "" : d.LastSeen.ToString("yyyy-MM-dd HH:mm:ss");
+            return o;
+        }
+
+        private static string AuthResult(string token, Account a)
+        {
+            Dictionary<string, object> o = new Dictionary<string, object>();
+            o["code"] = 0;
+            o["token"] = token;
+            o["user"] = a.User;
+            o["display"] = a.Display;
+            o["device"] = a.Device;
+            return Json.Serialize(o);
+        }
+
+        private static string ErrorResult(string message)
+        {
+            Dictionary<string, object> o = new Dictionary<string, object>();
+            o["code"] = 1;
+            o["msg"] = message;
+            return Json.Serialize(o);
+        }
+
+        private void HandleAccount(NetworkStream cs, string method, string pathOnly,
+            Dictionary<string, string> headers, string bodyText)
+        {
+            Dictionary<string, string> f = Fields(bodyText, headers);
+            string token = TokenOf(headers);
+
+            if (method == "POST" && pathOnly == "/account/register")
+            {
+                string error;
+                string newToken = AccountStore.Register(Get(f, "username"), Get(f, "password"),
+                    Get(f, "display"), out error);
+                if (newToken == null)
+                {
+                    WriteText(cs, "200 OK", "application/json; charset=utf-8", ErrorResult(error));
+                    return;
+                }
+                Account a = AccountStore.AccountOf(Get(f, "username"));
+                if (Log != null) Log("新用户注册 " + Get(f, "username"));
+                WriteText(cs, "200 OK", "application/json; charset=utf-8", AuthResult(newToken, a));
+                return;
+            }
+
+            if (method == "POST" && pathOnly == "/account/login")
+            {
+                Account a;
+                string error;
+                string newToken = AccountStore.Login(Get(f, "username"), Get(f, "password"),
+                    out a, out error);
+                if (newToken == null)
+                {
+                    WriteText(cs, "200 OK", "application/json; charset=utf-8", ErrorResult(error));
+                    return;
+                }
+                if (Log != null) Log("用户登录 " + a.User);
+                WriteText(cs, "200 OK", "application/json; charset=utf-8", AuthResult(newToken, a));
+                return;
+            }
+
+            Account account = AccountStore.Auth(token);
+            if (account == null)
+            {
+                WriteText(cs, "401 Unauthorized", "application/json; charset=utf-8",
+                    "{\"code\":401,\"msg\":\"登录已失效，请重新登录\"}");
+                return;
+            }
+
+            if (method == "POST" && pathOnly == "/account/logout")
+            {
+                AccountStore.Logout(token);
+                WriteText(cs, "200 OK", "application/json; charset=utf-8", "{\"code\":0}");
+                return;
+            }
+
+            if (method == "GET" && pathOnly == "/account/me")
+            {
+                Dictionary<string, object> o = new Dictionary<string, object>();
+                o["code"] = 0;
+                o["user"] = account.User;
+                o["display"] = account.Display;
+                o["device"] = account.Device;
+                WriteText(cs, "200 OK", "application/json; charset=utf-8", Json.Serialize(o));
+                return;
+            }
+
+            if (method == "GET" && pathOnly == "/account/devices")
+            {
+                List<Device> list = AccountStore.DevicesFor(account.User);
+                List<object> arr = new List<object>();
+                foreach (Device d in list) arr.Add(DeviceDict(d));
+                Dictionary<string, object> o = new Dictionary<string, object>();
+                o["code"] = 0;
+                o["count"] = arr.Count;
+                o["devices"] = arr;
+                WriteText(cs, "200 OK", "application/json; charset=utf-8", Json.Serialize(o));
+                return;
+            }
+
+            if (method == "POST" && pathOnly == "/account/devices")
+            {
+                string address = Get(f, "address");
+                string key = Get(f, "key");
+                bool custom = Get(f, "custom") == "1" || Get(f, "mode") == "custom" || address.Length == 0;
+                Device created;
+                string error;
+                string reference = AccountStore.AddDevice(account.User, Get(f, "name"),
+                    address, key, custom, out created, out error);
+                if (reference == null)
+                {
+                    WriteText(cs, "200 OK", "application/json; charset=utf-8", ErrorResult(error));
+                    return;
+                }
+                Dictionary<string, object> o = new Dictionary<string, object>();
+                o["code"] = 0;
+                o["device"] = DeviceDict(created);
+                o["msg"] = created.Custom
+                    ? "设备已添加，请把密钥填入客户硬件"
+                    : "设备已添加";
+                if (Log != null) Log("账号 " + account.User + " 添加设备 " + created.Name);
+                WriteText(cs, "200 OK", "application/json; charset=utf-8", Json.Serialize(o));
+                return;
+            }
+
+            if (method == "POST" && pathOnly == "/account/select")
+            {
+                string reference = Get(f, "ref");
+                if (reference.Length == 0) reference = Get(f, "device");
+                if (reference.Length == 0) reference = Get(f, "address");
+                string error;
+                if (!AccountStore.SelectDevice(account.User, reference, out error))
+                {
+                    WriteText(cs, "200 OK", "application/json; charset=utf-8", ErrorResult(error));
+                    return;
+                }
+                WriteText(cs, "200 OK", "application/json; charset=utf-8",
+                    "{\"code\":0,\"ref\":\"" + JsonEscape(reference) + "\"}");
+                return;
+            }
+
+            WriteText(cs, "404 Not Found", "application/json; charset=utf-8",
+                "{\"code\":404,\"msg\":\"接口不存在\"}");
+        }
+
+        private void HandleDeviceApi(NetworkStream cs, string method, string path, string pathOnly,
+            Dictionary<string, string> headers, string bodyText)
+        {
+            string key = "";
+            headers.TryGetValue("x-device-key", out key);
+            if (string.IsNullOrEmpty(key)) key = QueryParam(path, "key");
+            if (string.IsNullOrEmpty(key) && method == "POST")
+            {
+                Dictionary<string, string> bodyFields = Fields(bodyText, headers);
+                key = Get(bodyFields, "key");
+                if (key.Length == 0) key = Get(bodyFields, "device_key");
+            }
+            Device d = AccountStore.FindByKey(key);
+            if (d == null)
+            {
+                WriteText(cs, "404 Not Found", "application/json; charset=utf-8",
+                    "{\"code\":404,\"msg\":\"设备密钥无效\"}");
+                return;
+            }
+
+            if (method == "POST" && pathOnly == "/device/report")
+            {
+                string status = "";
+                string config = "";
+                try
+                {
+                    Dictionary<string, object> obj = Json.Deserialize<Dictionary<string, object>>(bodyText);
+                    object sv, cv;
+                    if (obj.TryGetValue("status", out sv) && sv != null) status = Json.Serialize(sv);
+                    if (obj.TryGetValue("config", out cv) && cv != null) config = Json.Serialize(cv);
+                    if (status.Length == 0 && bodyText.TrimStart().StartsWith("{")) status = bodyText;
+                }
+                catch
+                {
+                    if (bodyText.TrimStart().StartsWith("{")) status = bodyText;
+                }
+
+                string command;
+                lock (AccountStore.Gate)
+                {
+                    if (config.Length > 0) d.LastConfig = config;
+                    if (status.Length > 0) d.LastStatus = status;
+                    d.LastSeen = DateTime.Now;
+                    d.Reports++;
+                    command = d.PendingCommand ?? "";
+                    d.PendingCommand = "";
+                }
+                string json = "{\"code\":0,\"device\":\"" + JsonEscape(d.Name)
+                    + "\",\"online\":true,\"command\":" + (command.Length > 0 ? command : "null") + "}";
+                WriteText(cs, "200 OK", "application/json; charset=utf-8", json);
+                if (Log != null) Log("客户硬件上报 " + d.Name + "，累计 " + d.Reports + " 次");
+                return;
+            }
+
+            if (method == "GET" && pathOnly == "/device/command")
+            {
+                string command;
+                lock (AccountStore.Gate)
+                {
+                    command = d.PendingCommand ?? "";
+                    d.PendingCommand = "";
+                }
+                WriteText(cs, "200 OK", "application/json; charset=utf-8",
+                    "{\"code\":0,\"command\":" + (command.Length > 0 ? command : "null") + "}");
+                return;
+            }
+
+            WriteText(cs, "404 Not Found", "application/json; charset=utf-8",
+                "{\"code\":404,\"msg\":\"接口不存在\"}");
+        }
+
+        private void HandleCustom(NetworkStream cs, string method, string path, string pathOnly,
+            Dictionary<string, string> headers, string bodyText, Device d)
+        {
+            if (method == "GET" && pathOnly == "/api/status")
+            {
+                string json = d.LastStatus.Length > 0 ? d.LastStatus
+                    : "{\"state\":\"OFFLINE\",\"online\":false,\"vbat\":0,\"night\":0,\"quiet\":0,"
+                      + "\"pulses\":0,\"uptime\":0,\"fw\":\"custom\",\"mode\":\"CUSTOM\",\"rssi\":0}";
+                WriteText(cs, "200 OK", "application/json; charset=utf-8", json);
+                return;
+            }
+            if (method == "GET" && pathOnly == "/api/config")
+            {
+                WriteText(cs, "200 OK", "application/json; charset=utf-8",
+                    d.LastConfig.Length > 0 ? d.LastConfig : "{}");
+                return;
+            }
+            if (pathOnly.StartsWith("/api/camera", StringComparison.OrdinalIgnoreCase) ||
+                pathOnly.StartsWith("/api/vision", StringComparison.OrdinalIgnoreCase))
+            {
+                WriteText(cs, "501 Not Implemented", "application/json; charset=utf-8",
+                    "{\"code\":501,\"msg\":\"客户硬件未提供摄像头或视觉能力\"}");
+                return;
+            }
+            if (method == "POST")
+            {
+                Dictionary<string, object> cmd = new Dictionary<string, object>();
+                cmd["type"] = pathOnly.Length > 5 ? pathOnly.Substring(5) : "command";
+                cmd["method"] = method;
+                cmd["path"] = path;
+                cmd["body"] = bodyText;
+                cmd["at"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                lock (AccountStore.Gate) d.PendingCommand = Json.Serialize(cmd);
+                WriteText(cs, "200 OK", "application/json; charset=utf-8",
+                    "{\"code\":0,\"queued\":true,\"msg\":\"命令已下发，等待客户硬件拉取\"}");
+                if (Log != null) Log("下发命令到客户硬件 " + d.Name + "：" + cmd["type"]);
+                return;
+            }
+            WriteText(cs, "501 Not Implemented", "application/json; charset=utf-8",
+                "{\"code\":501,\"msg\":\"客户硬件不支持该接口\"}");
         }
 
         private static bool Connect(TcpClient c, string host, int port, int timeoutMs)
@@ -569,6 +996,8 @@ namespace ScarecrowServer
             sb.Append(Requests).Append("</span></div>");
             sb.Append("<div class=\"row\"><span class=\"k\">独立转发通道</span><span class=\"v\">");
             sb.Append(ChannelCount).Append("</span></div>");
+            sb.Append("<div class=\"row\"><span class=\"k\">注册账号</span><span class=\"v\">");
+            sb.Append(AccountStore.Count).Append("</span></div>");
             sb.Append("<div class=\"row\"><span class=\"k\">当前设备</span><span class=\"v mono\">");
             string active = ActiveAddress == null ? "" : (ActiveAddress() ?? "");
             sb.Append(Html(active.Length == 0 ? "未绑定" : active));
@@ -584,7 +1013,12 @@ namespace ScarecrowServer
                     sb.Append("<div class=\"row\"><span class=\"v\">");
                     sb.Append(d.Current ? "★ " : "");
                     sb.Append(Html(d.Name));
-                    sb.Append("</span><span class=\"v mono\">").Append(Html(d.Address)).Append("</span></div>");
+                    if (d.Custom) sb.Append(" <span class=\"k\">[客户硬件]</span>");
+                    if (d.Owner.Length > 0) sb.Append(" <span class=\"k\">" + Html(d.Owner) + "</span>");
+                    sb.Append("</span><span class=\"v mono\">");
+                    sb.Append(Html(d.Address.Length > 0 ? d.Address : "key:" + d.Key));
+                    if (d.Custom) sb.Append(d.Online ? " · 在线" : " · 离线");
+                    sb.Append("</span></div>");
                 }
             }
             else
@@ -680,6 +1114,7 @@ namespace ScarecrowServer
             _proxy.DeviceList = _devices;
 
             LoadConfig();
+            AccountStore.Init(_devices, SaveConfig);
 
             BuildHeader();
             BuildBottomNav();
@@ -769,8 +1204,11 @@ namespace ScarecrowServer
                             d.Name = parts[0].Trim();
                             d.Address = parts[1].Trim();
                             d.Current = parts.Length >= 3 && parts[2].Trim() == "1";
+                            d.Owner = parts.Length >= 4 ? parts[3].Trim() : "";
+                            d.Key = parts.Length >= 5 ? parts[4].Trim() : "";
+                            d.Custom = parts.Length >= 6 && parts[5].Trim() == "1";
                             if (d.Name.Length == 0) d.Name = d.Address;
-                            if (d.Address.Length > 0) _devices.Add(d);
+                            if (d.Address.Length > 0 || d.Key.Length > 0) _devices.Add(d);
                         }
                     }
                 }
@@ -802,7 +1240,9 @@ namespace ScarecrowServer
             foreach (Device d in _devices)
             {
                 sb.Append("device=").Append(d.Name).Append('|').Append(d.Address)
-                    .Append('|').Append(d.Current ? "1" : "0").Append('\n');
+                    .Append('|').Append(d.Current ? "1" : "0")
+                    .Append('|').Append(d.Owner).Append('|').Append(d.Key)
+                    .Append('|').Append(d.Custom ? "1" : "0").Append('\n');
             }
             Store.Save(sb.ToString());
         }
@@ -810,7 +1250,7 @@ namespace ScarecrowServer
         private string ActiveDeviceAddress()
         {
             foreach (Device d in _devices)
-                if (d.Current) return d.Address;
+                if (d.Current) return d.Ref;
             return "";
         }
 
@@ -822,6 +1262,8 @@ namespace ScarecrowServer
             {
                 if (string.Equals(d.Name, k, StringComparison.OrdinalIgnoreCase)) return d;
                 if (string.Equals(d.Address, k, StringComparison.OrdinalIgnoreCase)) return d;
+                if (string.Equals(d.Ref, k, StringComparison.OrdinalIgnoreCase)) return d;
+                if (d.Key.Length > 0 && string.Equals(d.Key, k, StringComparison.OrdinalIgnoreCase)) return d;
             }
             return null;
         }

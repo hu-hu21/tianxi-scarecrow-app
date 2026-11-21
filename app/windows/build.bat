@@ -17,7 +17,7 @@ if not exist "%~dp0dist" mkdir "%~dp0dist"
   -win32manifest:"%~dp0app.manifest" ^
   -r:System.dll -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.Web.Extensions.dll ^
   -out:"%~dp0dist\ScarecrowControl.exe" ^
-  "%~dp0ScarecrowControl.cs" "%~dp0Features.cs" || exit /b 1
+  "%~dp0ScarecrowControl.cs" "%~dp0Features.cs" "%~dp0LoginForm.cs" || exit /b 1
 
 echo.
 echo Done: %~dp0dist\ScarecrowControl.exe

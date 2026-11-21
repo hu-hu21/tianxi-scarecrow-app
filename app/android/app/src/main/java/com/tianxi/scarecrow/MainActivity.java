@@ -19,14 +19,18 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.Spinner;
+import android.widget.ArrayAdapter;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.net.InetAddress;
@@ -63,6 +67,12 @@ public class MainActivity extends Activity {
     private final java.util.List<Button> navButtons = new java.util.ArrayList<Button>();
     private EditText serverView;
     private EditText deviceView;
+    private Spinner deviceSpinner;
+    private TextView deviceHint;
+    private final java.util.List<String> deviceLabels = new java.util.ArrayList<String>();
+    private final java.util.List<String> deviceRefs = new java.util.ArrayList<String>();
+    private boolean fillingDevices = false;
+    private String loginUser = "";
     private int currentTab = 0;
     private String serverAddr = "192.168.4.1";
     private String deviceAddr = "";
@@ -124,6 +134,14 @@ public class MainActivity extends Activity {
         getWindow().setNavigationBarColor(BG);
 
         prefs = getSharedPreferences("scarecrow", MODE_PRIVATE);
+        String token = prefs.getString("token", "");
+        if (token == null || token.length() == 0) {
+            startActivity(new Intent(this, LoginActivity.class));
+            finish();
+            return;
+        }
+        DeviceApi.TOKEN = token;
+        loginUser = prefs.getString("user", "");
         String savedIp = prefs.getString("server", prefs.getString("ip", "192.168.4.1"));
         serverAddr = savedIp;
         deviceAddr = prefs.getString("device", "");
@@ -132,6 +150,7 @@ public class MainActivity extends Activity {
         setContentView(buildUi(savedIp));
         startPolling();
         refresh(true);
+        loadDevices();
     }
 
     @Override
@@ -281,6 +300,25 @@ public class MainActivity extends Activity {
 
     private LinearLayout buildServerCard(String savedIp) {
         LinearLayout c = card("服务器 / 设备绑定");
+
+        LinearLayout acct = hbox();
+        TextView who = tv("账号：" + (loginUser.length() == 0 ? "未登录" : loginUser),
+                13f, MUTED, true);
+        who.setLayoutParams(new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        acct.addView(who);
+        Button out = button("退出登录", CARD2);
+        out.setTextSize(12f);
+        out.setLayoutParams(new LinearLayout.LayoutParams(dp(96), dp(34)));
+        out.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                LoginActivity.logoutFrom(MainActivity.this);
+            }
+        });
+        acct.addView(out);
+        c.addView(acct);
+
         c.addView(tv("硬件数据经服务器转发，服务器地址与设备地址均可手动填写绑定",
                 12f, MUTED, false));
 
@@ -354,7 +392,242 @@ public class MainActivity extends Activity {
                 refresh(true);
             }
         });
+
+        TextView deviceTitle = tv("我的设备（来自服务端）", 12f, MUTED, false);
+        LinearLayout.LayoutParams deviceTitleLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        deviceTitleLp.topMargin = dp(14);
+        deviceTitle.setLayoutParams(deviceTitleLp);
+        c.addView(deviceTitle);
+
+        LinearLayout deviceRow = hbox();
+        deviceSpinner = new Spinner(this);
+        deviceSpinner.setBackground(shape(INPUT, 8));
+        final ArrayAdapter<String> adapter = new ArrayAdapter<String>(this,
+                android.R.layout.simple_spinner_dropdown_item, deviceLabels);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        deviceSpinner.setAdapter(adapter);
+        deviceSpinner.setLayoutParams(new LinearLayout.LayoutParams(0, dp(42), 1f));
+        deviceSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(android.widget.AdapterView<?> parent, View view,
+                                       int position, long id) {
+                if (fillingDevices || position < 0 || position >= deviceRefs.size()) return;
+                String ref = deviceRefs.get(position);
+                if (ref.length() == 0 || ref.equals(deviceAddr)) return;
+                deviceAddr = ref;
+                if (deviceView != null) deviceView.setText(ref);
+                prefs.edit().putString("device", ref).apply();
+                api = new DeviceApi(serverAddr, deviceAddr);
+                configLoaded = false;
+                if (deviceHint != null) {
+                    deviceHint.setText("当前设备：" + deviceLabels.get(position));
+                }
+                log("切换设备 → " + deviceLabels.get(position));
+                refresh(true);
+            }
+
+            @Override
+            public void onNothingSelected(android.widget.AdapterView<?> parent) {
+            }
+        });
+        deviceRow.addView(deviceSpinner);
+        Button refreshDevices = button("刷新", CARD2);
+        refreshDevices.setTextSize(12f);
+        refreshDevices.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                loadDevices();
+            }
+        });
+        LinearLayout.LayoutParams rdLp = new LinearLayout.LayoutParams(dp(72), dp(36));
+        rdLp.leftMargin = dp(8);
+        deviceRow.addView(refreshDevices, rdLp);
+        LinearLayout.LayoutParams deviceRowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        deviceRowLp.topMargin = dp(6);
+        c.addView(deviceRow, deviceRowLp);
+
+        deviceHint = tv("登录后自动读取当前账号名下的设备。", 11.5f, MUTED, false);
+        LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hintLp.topMargin = dp(6);
+        deviceHint.setLayoutParams(hintLp);
+        c.addView(deviceHint);
+
+        Button addDevice = button("添加我的硬件", ACCENT);
+        addDevice.setTextSize(13f);
+        LinearLayout.LayoutParams addLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        addLp.topMargin = dp(8);
+        addDevice.setLayoutParams(addLp);
+        addDevice.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                addMyDeviceDialog();
+            }
+        });
+        c.addView(addDevice);
+
         return c;
+    }
+
+    /** 异步读取当前账号名下的设备列表。 */
+    private void loadDevices() {
+        if (deviceHint != null) deviceHint.setText("正在读取我的设备…");
+        final DeviceApi call = new DeviceApi(serverAddr, "");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String error = null;
+                final java.util.List<String> labels = new java.util.ArrayList<String>();
+                final java.util.List<String> refs = new java.util.ArrayList<String>();
+                try {
+                    JSONObject result = new JSONObject(call.get("/account/devices"));
+                    JSONArray arr = result.optJSONArray("devices");
+                    if (arr != null) {
+                        for (int i = 0; i < arr.length(); i++) {
+                            JSONObject d = arr.getJSONObject(i);
+                            String name = d.optString("name", "");
+                            String ref = d.optString("ref", "");
+                            boolean custom = d.optBoolean("custom", false);
+                            labels.add(name + (custom ? "  [客户硬件]" : ""));
+                            refs.add(ref);
+                        }
+                    }
+                } catch (Exception e) {
+                    error = e.getMessage();
+                }
+
+                final String fError = error;
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (deviceSpinner == null) return;
+                        fillingDevices = true;
+                        deviceLabels.clear();
+                        deviceRefs.clear();
+                        deviceLabels.addAll(labels);
+                        deviceRefs.addAll(refs);
+                        if (deviceSpinner.getAdapter() instanceof ArrayAdapter) {
+                            ((ArrayAdapter<?>) deviceSpinner.getAdapter()).notifyDataSetChanged();
+                        }
+                        int index = 0;
+                        for (int i = 0; i < refs.size(); i++) {
+                            if (refs.get(i).equals(deviceAddr)) {
+                                index = i;
+                                break;
+                            }
+                        }
+                        if (!refs.isEmpty()) {
+                            deviceSpinner.setSelection(index);
+                            if (deviceHint != null) {
+                                deviceHint.setText("共 " + refs.size() + " 台设备，选择后立即切换。");
+                            }
+                            if (deviceAddr.length() == 0) {
+                                deviceAddr = refs.get(index);
+                                if (deviceView != null) deviceView.setText(deviceAddr);
+                                prefs.edit().putString("device", deviceAddr).apply();
+                                api = new DeviceApi(serverAddr, deviceAddr);
+                            }
+                        } else if (deviceHint != null) {
+                            deviceHint.setText(fError == null
+                                    ? "当前账号还没有设备，点击【添加我的硬件】。"
+                                    : "读取设备失败：" + fError);
+                        }
+                        fillingDevices = false;
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /** 添加自己的硬件：标准设备填地址；客户自定义硬件可只填名称，密钥由服务端生成。 */
+    private void addMyDeviceDialog() {
+        LinearLayout box = vbox();
+        box.setPadding(dp(20), dp(8), dp(20), dp(4));
+
+        box.addView(tv("设备名称", 12f, MUTED, false));
+        final EditText name = field("例如 一号田东侧", "", InputType.TYPE_CLASS_TEXT);
+        box.addView(name);
+
+        box.addView(tv("设备地址（标准硬件填写，例如 192.168.1.66:80）", 12f, MUTED, false));
+        final EditText address = field("可留空（客户自定义硬件）", "", InputType.TYPE_CLASS_TEXT);
+        box.addView(address);
+
+        box.addView(tv("设备密钥（客户自定义硬件填写，留空自动生成）", 12f, MUTED, false));
+        final EditText key = field("可留空", "", InputType.TYPE_CLASS_TEXT);
+        box.addView(key);
+
+        final CheckBox custom = new CheckBox(this);
+        custom.setText("客户自定义硬件：数据由硬件主动上报到服务端");
+        custom.setTextSize(12.5f);
+        custom.setTextColor(TEXT);
+        custom.setPadding(0, dp(6), 0, 0);
+        box.addView(custom);
+
+        new AlertDialog.Builder(this)
+                .setTitle("添加我的硬件")
+                .setView(box)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("添加", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        submitDevice(name, address, key, custom);
+                    }
+                })
+                .show();
+    }
+
+    private void submitDevice(final EditText name, final EditText address,
+                              final EditText key, final CheckBox custom) {
+        final String n = name.getText().toString().trim();
+        final String a = address.getText().toString().trim();
+        final String k = key.getText().toString().trim();
+        final boolean isCustom = custom.isChecked() || a.length() == 0;
+        final DeviceApi call = new DeviceApi(serverAddr, "");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String error = null;
+                String shownKey = k;
+                String shownName = n.length() == 0 ? (a.length() == 0 ? "我的硬件" : a) : n;
+                try {
+                    JSONObject body = new JSONObject();
+                    body.put("name", shownName);
+                    body.put("address", a);
+                    body.put("key", k);
+                    body.put("custom", isCustom ? "1" : "0");
+                    JSONObject result = new JSONObject(call.postJson("/account/devices", body.toString()));
+                    if (result.optInt("code", 1) != 0) {
+                        error = result.optString("msg", "添加失败");
+                    } else {
+                        JSONObject d = result.optJSONObject("device");
+                        if (d != null) shownKey = d.optString("key", k);
+                    }
+                } catch (Exception e) {
+                    error = e.getMessage();
+                }
+                final String fError = error;
+                final String fKey = shownKey;
+                final String fName = shownName;
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (fError != null) {
+                            Toast.makeText(MainActivity.this,
+                                    "添加失败：" + fError, Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        Toast.makeText(MainActivity.this,
+                                isCustom ? "已添加 " + fName + "，设备密钥：" + fKey
+                                        : "已添加 " + fName, Toast.LENGTH_LONG).show();
+                        log("添加我的硬件 " + fName);
+                        loadDevices();
+                    }
+                });
+            }
+        }).start();
     }
 
     private LinearLayout buildBottomNav() {
@@ -778,6 +1051,11 @@ public class MainActivity extends Activity {
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
+                            String m = e.getMessage();
+                            if (m != null && m.contains("401")) {
+                                LoginActivity.logoutFrom(MainActivity.this);
+                                return;
+                            }
                             setOnline(false, shortMsg(e));
                         }
                     });

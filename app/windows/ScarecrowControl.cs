@@ -7,9 +7,11 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using Timer = System.Windows.Forms.Timer;
 
 namespace ScarecrowControl
 {
@@ -77,7 +79,18 @@ namespace ScarecrowControl
                 return;
             }
 
-            Application.Run(new MainForm());
+            // 自动化验证用：跳过登录窗口，直接以已有令牌启动。
+            if (args.Length >= 4 && args[0] == "--token")
+            {
+                Application.Run(new MainForm(args[1], args[2], args[3]));
+                return;
+            }
+
+            using (LoginForm login = new LoginForm())
+            {
+                if (login.ShowDialog() != DialogResult.OK) return;
+                Application.Run(new MainForm(login.ServerAddress, login.SessionToken, login.LoginUser));
+            }
         }
     }
 
@@ -197,6 +210,8 @@ namespace ScarecrowControl
         public static string DeviceAddress = "";
         /// <summary>每个客户端进程一个标识，服务器据此分配独立转发通道。</summary>
         public static readonly string ClientId = Guid.NewGuid().ToString("N");
+        /// <summary>登录后由服务端下发的会话令牌。</summary>
+        public static string Token = "";
 
         private static HttpWebRequest Create(string url)
         {
@@ -204,6 +219,10 @@ namespace ScarecrowControl
             req.Proxy = null;
             req.KeepAlive = false;
             req.Headers["X-Client-Id"] = ClientId;
+            if (!string.IsNullOrEmpty(Token))
+            {
+                req.Headers["X-Auth-Token"] = Token;
+            }
             if (!string.IsNullOrEmpty(DeviceAddress))
             {
                 req.Headers["X-Device-Address"] = DeviceAddress;
@@ -438,6 +457,19 @@ namespace ScarecrowControl
         }
     }
 
+    /// <summary>设置页设备下拉项，数据来自服务端 /account/devices。</summary>
+    class DeviceChoice
+    {
+        public string Name = "";
+        public string Ref = "";
+        public bool Custom;
+
+        public override string ToString()
+        {
+            return Name + (Custom ? "  [客户硬件]" : "");
+        }
+    }
+
     class MainForm : Form
     {
         private TextBox _serverIp;
@@ -468,13 +500,27 @@ namespace ScarecrowControl
         private bool _online;
         private bool _configLoaded;
         private string _serverAddr = "192.168.4.1";
+        private string _loginUser = "";
         private string _lastIp = "";
         private string _lastError = "";
+        private Label _accountLabel;
+        private ComboBox _deviceBox;
+        private Label _deviceHint;
+        private bool _devicesLoaded;
 
         private readonly JavaScriptSerializer _json = new JavaScriptSerializer();
 
         public MainForm()
+            : this(null, null, null)
         {
+        }
+
+        public MainForm(string server, string token, string user)
+        {
+            _serverAddr = string.IsNullOrEmpty(server) ? "192.168.4.1" : server;
+            Http.Token = token ?? "";
+            _loginUser = user ?? "";
+
             Text = "稻草人驱鸟控制器 v3.21.5 - Windows 控制台";
             ClientSize = new Size(1000, 800);
             FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -494,6 +540,11 @@ namespace ScarecrowControl
             BuildSplash();
 
             LoadSettings();
+            if (!string.IsNullOrEmpty(server))
+            {
+                _serverAddr = server;
+                if (_serverIp != null) _serverIp.Text = server;
+            }
             ApplyDpiScale();
 
             _timer = new Timer();
@@ -515,6 +566,7 @@ namespace ScarecrowControl
                     _splashTimer.Stop();
                     if (_splash != null) _splash.Visible = false;
                     if (Ip.Length > 0) PollTick();
+                    if (!_devicesLoaded) LoadDevices();
                 };
                 _splashTimer.Start();
             };
@@ -544,11 +596,11 @@ namespace ScarecrowControl
             CardPanel server = NewCard(16, 92, 968, 138, "服务器 / 设备绑定");
 
             server.Controls.Add(Ui.Lbl("服务器地址（设备数据经服务器转发，支持 IP:端口）",
-                18, 42, 562, 26, 9f, false, Theme.Muted));
+                18, 42, 390, 26, 9f, false, Theme.Muted));
             _serverIp = new TextBox();
             _serverIp.Text = "192.168.4.1";
-            _serverIp.Location = new Point(586, 41);
-            _serverIp.Size = new Size(220, 28);
+            _serverIp.Location = new Point(420, 41);
+            _serverIp.Size = new Size(250, 28);
             _serverIp.BackColor = Theme.Input;
             _serverIp.ForeColor = Theme.Text;
             _serverIp.BorderStyle = BorderStyle.FixedSingle;
@@ -556,11 +608,11 @@ namespace ScarecrowControl
             server.Controls.Add(_serverIp);
 
             server.Controls.Add(Ui.Lbl("设备地址（服务器转发的目标设备）",
-                18, 86, 562, 26, 9f, false, Theme.Muted));
+                18, 86, 390, 26, 9f, false, Theme.Muted));
             _deviceAddr = new TextBox();
             _deviceAddr.Text = "192.168.4.1";
-            _deviceAddr.Location = new Point(586, 85);
-            _deviceAddr.Size = new Size(220, 28);
+            _deviceAddr.Location = new Point(420, 85);
+            _deviceAddr.Size = new Size(250, 28);
             _deviceAddr.BackColor = Theme.Input;
             _deviceAddr.ForeColor = Theme.Text;
             _deviceAddr.BorderStyle = BorderStyle.FixedSingle;
@@ -568,7 +620,7 @@ namespace ScarecrowControl
             server.Controls.Add(_deviceAddr);
 
             UiButton applyServer = new UiButton("保存并连接", Theme.Accent);
-            applyServer.Location = new Point(700, 63);
+            applyServer.Location = new Point(688, 63);
             applyServer.Size = new Size(130, 38);
             applyServer.Click += delegate
             {
@@ -592,8 +644,145 @@ namespace ScarecrowControl
             autoFind.Click += delegate { AutoDetect(); };
             server.Controls.Add(autoFind);
 
+            BuildDeviceCard();
             BuildConfigCard();
-            AddUsageCard(_pageSettings, 760, "硬件设置", 160);
+            AddUsageCard(_pageSettings, 930, "硬件设置", 190);
+        }
+
+        private void BuildDeviceCard()
+        {
+            CardPanel card = NewCard(16, 246, 968, 150, "我的设备（来自服务端）");
+
+            card.Controls.Add(Ui.Lbl("选择当前账号要查看的硬件；客户自定义硬件按密钥接入统一服务端。",
+                18, 40, 930, 22, 8.8f, false, Theme.Muted));
+
+            _deviceBox = new ComboBox();
+            _deviceBox.DropDownStyle = ComboBoxStyle.DropDownList;
+            _deviceBox.Location = new Point(18, 68);
+            _deviceBox.Size = new Size(640, 30);
+            _deviceBox.BackColor = Theme.Input;
+            _deviceBox.ForeColor = Theme.Text;
+            _deviceBox.FlatStyle = FlatStyle.Flat;
+            _deviceBox.Font = new Font("Microsoft YaHei UI", 9.5f);
+            _deviceBox.SelectedIndexChanged += delegate { DeviceSelected(); };
+            card.Controls.Add(_deviceBox);
+
+            UiButton refresh = new UiButton("刷新", Theme.CardEdge);
+            refresh.Location = new Point(672, 66);
+            refresh.Size = new Size(110, 34);
+            refresh.Click += delegate { LoadDevices(); };
+            card.Controls.Add(refresh);
+
+            UiButton add = new UiButton("添加我的硬件", Theme.Accent);
+            add.Location = new Point(792, 66);
+            add.Size = new Size(158, 34);
+            add.Click += delegate { AddMyDevice(); };
+            card.Controls.Add(add);
+
+            _deviceHint = Ui.Lbl("登录后自动读取当前账号名下的设备。", 18, 110, 930, 24, 8.5f, false, Theme.Muted);
+            card.Controls.Add(_deviceHint);
+        }
+
+        private void DeviceSelected()
+        {
+            if (_busyFillingDevices) return;
+            DeviceChoice item = _deviceBox.SelectedItem as DeviceChoice;
+            if (item == null) return;
+            _deviceAddr.Text = item.Ref;
+            Http.DeviceAddress = item.Ref;
+            SaveSettings();
+            if (_deviceHint != null) _deviceHint.Text = "当前设备：" + item.Name + "  " + item.Ref;
+            Log("切换设备 " + item.Name + " → " + item.Ref);
+            ConnectNow();
+        }
+
+        private bool _busyFillingDevices;
+
+        private void LoadDevices()
+        {
+            if (string.IsNullOrEmpty(Http.Token))
+            {
+                if (_deviceHint != null) _deviceHint.Text = "未登录，请重新启动并登录。";
+                return;
+            }
+            string url = LoginForm.Normalize(Ip) + "/account/devices";
+            if (_deviceHint != null) _deviceHint.Text = "正在读取我的设备…";
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string error = null;
+                List<DeviceChoice> list = new List<DeviceChoice>();
+                string current = _deviceAddr == null ? "" : _deviceAddr.Text.Trim();
+                try
+                {
+                    string text = Http.Get(url, 6000);
+                    Dictionary<string, object> d = _json.Deserialize<Dictionary<string, object>>(text);
+                    System.Collections.IEnumerable arr = d["devices"] as System.Collections.IEnumerable;
+                    if (arr != null)
+                    {
+                        foreach (object o in arr)
+                        {
+                            Dictionary<string, object> dev = (Dictionary<string, object>)o;
+                            DeviceChoice c = new DeviceChoice();
+                            c.Name = Convert.ToString(dev["name"]);
+                            c.Ref = Convert.ToString(dev["ref"]);
+                            c.Custom = Convert.ToBoolean(dev["custom"]);
+                            list.Add(c);
+                        }
+                    }
+                }
+                catch (Exception ex) { error = ex.Message; }
+
+                BeginInvoke(new Action(delegate
+                {
+                    _busyFillingDevices = true;
+                    _deviceBox.Items.Clear();
+                    foreach (DeviceChoice c in list) _deviceBox.Items.Add(c);
+                    if (list.Count > 0)
+                    {
+                        int index = 0;
+                        for (int i = 0; i < list.Count; i++)
+                        {
+                            if (list[i].Ref == current || list[i].Ref == Http.DeviceAddress)
+                            {
+                                index = i;
+                                break;
+                            }
+                        }
+                        _deviceBox.SelectedIndex = index;
+                        _deviceHint.Text = "共 " + list.Count + " 台设备，选择后立即切换。";
+                    }
+                    else
+                    {
+                        _deviceHint.Text = error == null
+                            ? "当前账号还没有设备，点击【添加我的硬件】。"
+                            : "读取设备失败：" + error;
+                    }
+                    _busyFillingDevices = false;
+                    DeviceChoice sel = _deviceBox.SelectedItem as DeviceChoice;
+                    if (sel != null)
+                    {
+                        _deviceAddr.Text = sel.Ref;
+                        Http.DeviceAddress = sel.Ref;
+                    }
+                    _devicesLoaded = true;
+                }));
+            });
+        }
+
+        private void AddMyDevice()
+        {
+            using (DeviceDialog dlg = new DeviceDialog())
+            {
+                dlg.ServerAddress = delegate { return Ip; };
+                if (dlg.ShowDialog(this) == DialogResult.OK)
+                {
+                    _deviceHint.Text = dlg.Custom
+                        ? "已添加 " + dlg.DeviceName + "，设备密钥：" + dlg.DeviceKey
+                        : "已添加 " + dlg.DeviceName + "  " + dlg.DeviceAddress;
+                    Log("添加我的硬件 " + dlg.DeviceName + " → " + dlg.DeviceRef);
+                    LoadDevices();
+                }
+            }
         }
 
         private void BuildAboutPage()
@@ -775,13 +964,28 @@ namespace ScarecrowControl
             Controls.Add(Ui.Lbl("稻草人驱鸟控制器", 20, 12, 380, 34, 18f, true, Theme.Text));
             Controls.Add(Ui.Lbl("Windows 控制台  ·  经服务器转发  ·  v3.21.5", 22, 46, 460, 22, 9f, false, Theme.Muted));
 
-            Label hint = Ui.Lbl("连接设置见【硬件设置】", 604, 30, 200, 22, 9f, false, Theme.Muted);
+            Label hint = Ui.Lbl("连接设置见【硬件设置】", 400, 30, 200, 22, 9f, false, Theme.Muted);
             hint.TextAlign = ContentAlignment.MiddleRight;
             Controls.Add(hint);
+
+            _accountLabel = Ui.Lbl("账号：" + (_loginUser.Length == 0 ? "未登录" : _loginUser) + "  ·  退出",
+                610, 30, 180, 22, 8.5f, false, Theme.Accent);
+            _accountLabel.TextAlign = ContentAlignment.MiddleRight;
+            _accountLabel.Cursor = Cursors.Hand;
+            _accountLabel.Click += delegate { Logout(); };
+            Controls.Add(_accountLabel);
 
             _pill = Ui.Lbl("● 未连接", 800, 28, 182, 26, 9.5f, false, Theme.Muted);
             _pill.TextAlign = ContentAlignment.MiddleRight;
             Controls.Add(_pill);
+        }
+
+        private void Logout()
+        {
+            if (MessageBox.Show(this, "确定退出当前账号？", "退出登录",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            Http.Token = "";
+            Application.Restart();
         }
 
         private void ShowAbout()
@@ -928,7 +1132,7 @@ namespace ScarecrowControl
 
         private void BuildConfigCard()
         {
-            CardPanel card = NewCard(16, 246, 968, 500, "参数配置");
+            CardPanel card = NewCard(16, 410, 968, 500, "参数配置");
 
             card.Controls.Add(Ui.Lbl("推荐场景", 18, 38, 74, 26, 9f, false, Theme.Muted));
 

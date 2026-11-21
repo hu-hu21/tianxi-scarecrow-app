@@ -15,9 +15,9 @@ if not exist "%~dp0dist" mkdir "%~dp0dist"
 "%CSC%" -nologo -target:winexe -platform:anycpu -codepage:65001 -optimize+ ^
   -win32icon:"%~dp0app.ico" ^
   -win32manifest:"%~dp0app.manifest" ^
-  -r:System.dll -r:System.Windows.Forms.dll -r:System.Drawing.dll ^
+  -r:System.dll -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.Web.Extensions.dll ^
   -out:"%~dp0dist\ScarecrowServer.exe" ^
-  "%~dp0ScarecrowServer.cs" || exit /b 1
+  "%~dp0ScarecrowServer.cs" "%~dp0AccountStore.cs" || exit /b 1
 
 echo.
 echo Done: %~dp0dist\ScarecrowServer.exe
