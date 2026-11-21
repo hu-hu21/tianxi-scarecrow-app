@@ -1,0 +1,26 @@
+# 编译产物（不入库）
+app/windows/dist/
+app/windows/bin/
+app/windows/obj/
+app/android/dist/
+app/android/build/
+app/android/app/build/
+app/android/.gradle/
+app/android/.idea/
+app/android/local.properties
+app/android/keystore/
+
+# 安装包与二进制
+*.apk
+*.aab
+*.idsig
+*.exe
+*.dll
+*.pdb
+*.class
+*.dex
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
